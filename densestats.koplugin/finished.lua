@@ -11,6 +11,14 @@ finished.lua — 从 sidecar 读取"已读完"的书
 
 local M = {}
 
+-- 去掉结尾斜杠。KOReader 的 lastdir 之类的设置带不带尾斜杠不固定，
+-- 不归一化的话 "/a/b" 和 "/a/b/" 会拼出两套不同的路径字符串，
+-- 同一本书被数两次（实测 500 本变成 1000 本）。
+function M.normDir(path)
+    local p = tostring(path or ""):gsub("/+$", "")
+    return p
+end
+
 -- 判断是不是 sidecar 元数据文件：metadata.<ext>.lua
 function M.isSidecarFile(name)
     return name:match("^metadata%..+%.lua$") ~= nil
@@ -43,6 +51,8 @@ end
 -- max_depth 防止在整个文件系统上爬；遇到 .sdr 目录就不再往下钻。
 function M.collectSidecars(root, lfs, max_depth, out)
     out = out or {}
+    root = M.normDir(root)
+    if root == "" then return out end
     max_depth = max_depth or 6
     if max_depth < 0 then return out end
     -- lfs.dir 返回 (迭代器, 目录对象)，两个都要接住，否则迭代器拿不到状态
@@ -66,8 +76,11 @@ end
 -- title 从 sidecar 路径的 .sdr 目录名反推（够用，且不必解析整个 metadata）
 function M.summarize(roots, lfs, loader)
     local months, titles, total = {}, {}, 0
-    local seen = {}
-    for _, root in ipairs(roots) do
+    local seen, seen_root = {}, {}
+    for _, raw_root in ipairs(roots or {}) do
+      local root = M.normDir(raw_root)
+      if root ~= "" and not seen_root[root] then
+        seen_root[root] = true
         for _, path in ipairs(M.collectSidecars(root, lfs)) do
             if not seen[path] then
                 seen[path] = true
@@ -85,6 +98,7 @@ function M.summarize(roots, lfs, loader)
                 end
             end
         end
+      end
     end
     return { months = months, total = total, titles = titles }
 end

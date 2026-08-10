@@ -45,5 +45,16 @@ ok(#F.collectSidecars("./不存在的目录", lfs) == 0, "目录不存在不报�
 local s2 = F.summarize({ "./test/fixtures", "./test/fixtures" }, lfs)
 ok(s2.total == 3, "同一目录传两遍不重复计数", s2.total)
 
+print("== 路径归一化（防重复计数）==")
+ok(F.normDir("/a/b/") == "/a/b", "去掉尾斜杠", F.normDir("/a/b/"))
+ok(F.normDir("/a/b///") == "/a/b", "多个尾斜杠", F.normDir("/a/b///"))
+ok(F.normDir("/a/b") == "/a/b", "本来就没有则不变")
+ok(F.normDir(nil) == "", "nil 返回空串")
+local s1 = F.summarize({ "./test/fixtures" }, lfs)
+local s2 = F.summarize({ "./test/fixtures", "./test/fixtures/" }, lfs)
+ok(s2.total == s1.total, "带尾斜杠的同一目录不重复计数", s2.total .. " vs " .. s1.total)
+local s3 = F.summarize({ "./test", "./test/fixtures" }, lfs)
+ok(s3.total == s1.total, "父目录与子目录同时给出也不重复", s3.total)
+
 print(string.format("\n%d passed, %d failed", pass, fail))
 os.exit(fail == 0 and 0 or 1)

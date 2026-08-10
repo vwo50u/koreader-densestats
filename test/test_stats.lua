@@ -96,5 +96,38 @@ local nofall = S.derive({ by_day = { ["2026-08-10"]=3600 } }, ts(2026,8,10))
 ok(nofall.total == 3600 and nofall.active_days == 1, "没给全量汇总时退回窗口值",
    nofall.total .. "/" .. nofall.active_days)
 
+print("== groupFinished ==")
+local g = S.groupFinished({
+    { title="乙", month="2026-08", date="2026-08-06" },
+    { title="甲", month="2026-08", date="2026-08-09" },
+    { title="丙", month="2026-07", date="2026-07-21" },
+})
+ok(#g == 3, "条目数不变", #g)
+ok(g[1].title == "甲" and g[2].title == "乙" and g[3].title == "丙", "按日期降序",
+   g[1].title .. g[2].title .. g[3].title)
+ok(g[1].label == "2026-08", "当月第一行标月份", g[1].label)
+ok(g[2].label == "", "同月第二行留空", "[" .. g[2].label .. "]")
+ok(g[3].label == "2026-07", "换月重新标", g[3].label)
+
+-- 同一天的次序按书名字节序，仅保证稳定可复现；中文书名的先后没有语义
+-- （Lua 比较的是 UTF-8 字节：乙 E4.. 排在 甲 E7.. 前面）
+local same_day = S.groupFinished({
+    { title="B", month="2026-08", date="2026-08-06" },
+    { title="A", month="2026-08", date="2026-08-06" },
+})
+ok(same_day[1].title == "A", "同一天按书名字节序,结果稳定", same_day[1].title)
+local cjk = S.groupFinished({
+    { title="甲", month="2026-08", date="2026-08-06" },
+    { title="乙", month="2026-08", date="2026-08-06" },
+})
+ok(cjk[1].title == "乙", "中文按字节序(非拼音),但可复现", cjk[1].title)
+
+local nodate = S.groupFinished({ { title="无日期", date="2026-05-01" } })
+ok(nodate[1].month == "2026-05", "缺 month 时从 date 推出", nodate[1].month)
+ok(#S.groupFinished(nil) == 0, "nil 不炸")
+ok(#S.groupFinished({ "不是表", 42 }) == 0, "脏数据被跳过")
+local nofield = S.groupFinished({ { } })
+ok(nofield[1].title == "" and nofield[1].label == "", "空条目不炸")
+
 print(string.format("\n%d passed, %d failed", pass, fail))
 os.exit(fail == 0 and 0 or 1)

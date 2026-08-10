@@ -108,10 +108,10 @@ local function collect()
     -- 累计时长直接取 book 表的汇总列（KOReader 写入时已按 max_sec 截断过，
     -- 和上面逐行截断的结果一致——用真实库比对过），比全表求和快一个数量级。
     -- 有记录的天数仍要全表扫一次，但只做 COUNT DISTINCT，代价可接受。
-    local totals = rowsOf(conn:exec([[
+    local totals = rowsOf(conn:exec(string.format([[
         SELECT (SELECT SUM(total_read_time) FROM book),
-               (SELECT COUNT(DISTINCT date(start_time, 'unixepoch')) FROM page_stat_data);
-    ]]), 2)[1]
+               (SELECT COUNT(DISTINCT date(start_time + %d, 'unixepoch')) FROM page_stat_data);
+    ]], off)), 2)[1]
     if totals then
         data.total_all = tonumber(totals[1]) or 0
         data.active_days_all = tonumber(totals[2]) or 0
@@ -183,7 +183,8 @@ end
 local function scanRoots()
     local roots, seen = {}, {}
     local function add(d)
-        if d and d ~= "" and not seen[d] then seen[d] = true; roots[#roots + 1] = d end
+        d = d and Finished.normDir(d) or ""   -- 尾斜杠不归一化会导致重复计数
+        if d ~= "" and not seen[d] then seen[d] = true; roots[#roots + 1] = d end
     end
     add(DataStorage:getDocSettingsDir())   -- 集中存放模式
     if G_reader_settings then
@@ -362,8 +363,14 @@ local function currentBook(cur, usable_w)
     })
     table.insert(g, VerticalSpan:new{ width = Screen:scaleBySize(6) })
 
-    local line = string.format("%d%%  ·  %d / %d 页  ·  累计 %s",
-        math.floor(cur.frac * 100 + 0.5), cur.page, cur.pages, fmtHours(cur.sec))
+    -- 有些格式（如刚打开、或 total_pages 缺失）拿不到总页数，别显示 "0 / 0 页"
+    local line
+    if cur.pages > 0 then
+        line = string.format("%d%%  ·  %d / %d 页  ·  累计 %s",
+            math.floor(cur.frac * 100 + 0.5), cur.page, cur.pages, fmtHours(cur.sec))
+    else
+        line = string.format("累计 %s", fmtHours(cur.sec))
+    end
     table.insert(g, txt(line, FACE_L(), usable_w))
     return g
 end
@@ -378,26 +385,15 @@ local function finishedRows(fin_data, usable_w, budget_h)
         return g
     end
 
-    local items = {}
-    for _, t in ipairs(list) do items[#items + 1] = t end
-    table.sort(items, function(a, b)
-        local da, db = a.date or a.month or "", b.date or b.month or ""
-        if da ~= db then return da > db end
-        return (a.title or "") < (b.title or "")
-    end)
+    local items = Stats.groupFinished(list)
 
     local date_w = Screen:scaleBySize(72)
     local gap_w = Screen:scaleBySize(14)
     local line_gap = Screen:scaleBySize(7)
     local used, shown = 0, 0
 
-    local last_month = nil
     for _, t in ipairs(items) do
-        -- 按月展示：同一个月里只有第一行标月份，后面几行留空，读起来自然成组
-        local month = t.month or ((t.date or ""):sub(1, 7))
-        local label = (month ~= last_month) and month or ""
-        last_month = month
-        local dw = txt(label, FACE_M(), date_w)
+        local dw = txt(t.label, FACE_M(), date_w)
         local tw = txt(t.title or "", FACE_L(), usable_w - date_w - gap_w)
         local h = math.max(dw:getSize().h, tw:getSize().h)
         if used + h + line_gap > budget_h then break end
@@ -582,11 +578,6 @@ end
 
 -- 调试用：设 DENSESTATS_AUTOSHOW=1 启动时自动弹出预览，方便截图。
 function DenseStats:onReaderReady()
-    self:_maybeAutoShow()
-    maybeRescanLater()
-end
-
-function DenseStats:onFileManagerReady()
     self:_maybeAutoShow()
     maybeRescanLater()
 end
