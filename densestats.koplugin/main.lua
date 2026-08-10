@@ -258,10 +258,13 @@ end
 
 -- ============================ 画面 ============================
 
-local function FACE_L() return Font:getFace("cfont", 13) end
-local function FACE_V() return Font:getFace("cfont", 21) end
-local function FACE_M() return Font:getFace("cfont", 16) end
-local function FACE_S() return Font:getFace("cfont", 13) end
+-- 字号一律用 KOReader 的命名档位（font.lua 的 sizemap），不写死数字：
+-- getFace 内部按屏幕 DPI 做 scaleBySize，档位本身也跟着 KOReader 的字号体系走。
+-- 官方 readerprogress.lua 就是这么干的（smallffont / ffont / largeffont）。
+local function FACE_L() return Font:getFace("smallffont") end    -- 15：标签、附注
+local function FACE_V() return Font:getFace("largeffont") end    -- 25：大数值
+local function FACE_M() return Font:getFace("ffont") end         -- 20：正文、书名
+local function FACE_S() return Font:getFace("smallffont") end    -- 15：页脚
 
 local function txt(s, face, max_width)
     return TextWidget:new{ text = tostring(s), face = face, max_width = max_width }
@@ -364,7 +367,7 @@ local function curveWidget(curve, usable_w)
     return CurveWidget:new{
         values = curve,
         w = usable_w,
-        h = Screen:scaleBySize(70),
+        h = math.floor(Screen:getHeight() * 0.10),   -- 曲线高度按屏幕比例，跨设备一致
         scale = math.max(peak, 3600),
         gap = Screen:scaleBySize(1),
     }, peak
@@ -498,9 +501,13 @@ local function buildWidget()
     if os.getenv("DENSESTATS_DEBUG") == "1" then
         local function wof(w) local ok, sz = pcall(function() return w:getSize() end)
             return (ok and sz and sz.w) or -1 end
-        logger.info(string.format("densestats widths: screen=%d pad=%d usable=%d curve=%d hrule=%d root=%d col=%d v9999=%d wk9999=%d",
-            W, pad, usable, wof(curve), wof(hrule(usable)), wof(root),
-            math.floor(usable / 4), wof(txt("9999", FACE_V())), wof(txt("本周 9999 页", FACE_L()))))
+        local function hof(w) local ok, sz = pcall(function() return w:getSize() end)
+            return (ok and sz and sz.h) or -1 end
+        logger.info(string.format(
+            "densestats layout: screen=%dx%d dpi_scale=%d pad=%d usable=%d curve_w=%d curve_h=%d "
+            .. "大字高=%d 正文高=%d 小字高=%d",
+            W, H, Screen:scaleBySize(100), pad, usable, wof(curve), hof(curve),
+            hof(txt("8h26", FACE_V())), hof(txt("书名", FACE_M())), hof(txt("标签", FACE_L()))))
     end
 
     -- 已读完：先量此刻用掉多少高度，剩下的（扣掉页脚）全给它，装不下就截断
