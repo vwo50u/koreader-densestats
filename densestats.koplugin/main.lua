@@ -1,8 +1,9 @@
 --[[
 densestats.koplugin — 高密度阅读统计睡眠屏幕
 
-接管内置的 "readingprogress" 睡眠屏幕类型（screensaver.lua 里
-widget = Screensaver.getReaderProgress()），设置里仍选「在休眠屏幕上显示阅读进度」。
+接管内置的 "readingprogress" 睡眠屏幕类型：screensaver.lua 在该模式下调用
+ui.statistics:onShowReaderProgress(true) 取 widget，本插件包住这个方法。
+设置里仍选「在休眠屏幕上显示阅读进度」。
 数据只读 statistics 插件的 statistics.sqlite3，不写。
 statistics 插件必须保持启用。
 
@@ -23,7 +24,6 @@ local HorizontalSpan = require("ui/widget/horizontalspan")
 local InputContainer = require("ui/widget/container/inputcontainer")
 local LineWidget = require("ui/widget/linewidget")
 local SQ3 = require("lua-ljsqlite3/init")
-local Screensaver = require("ui/screensaver")
 local TextWidget = require("ui/widget/textwidget")
 local UIManager = require("ui/uimanager")
 local VerticalGroup = require("ui/widget/verticalgroup")
@@ -43,6 +43,9 @@ local CFG = {
 }
 -- =================================================================
 
+-- 注意：Kindle 上 start_time 与设备本地墙钟一致（系统时区为 UTC），
+-- 因此在设备上 tzOffset() 返回 0，分组结果与 KOReader 自身完全一致（已用真实库核对）。
+-- 在别的机器上直接读这个库做 SQL 时，偏移应当填 0 而不是 +8h。
 local function tzOffset()
     local now = os.time()
     local u = os.date("!*t", now)
@@ -79,7 +82,7 @@ end
 
 local function collect()
     local db_path = DataStorage:getSettingsDir() .. "/statistics.sqlite3"
-    local conn = SQ3.open(db_path, "ro")
+    local conn = SQ3.open(db_path)
     if not conn then return nil end
 
     local off = tzOffset()
@@ -364,20 +367,25 @@ function DenseStats:init()
     if self.ui and self.ui.menu then
         self.ui.menu:registerToMainMenu(self)
     end
-    if Screensaver._densestats_wrapped then return end
-    Screensaver._densestats_wrapped = true
 
-    local orig_setup = Screensaver.setup
-    Screensaver.setup = function(this, event, event_message)
-        local prev = Screensaver.getReaderProgress
-        Screensaver.getReaderProgress = function(...)
+    -- 睡眠屏幕接管点（对 KOReader 2026.07 核实过）：
+    --   screensaver.lua:548
+    --     widget = self.ui.statistics:onShowReaderProgress(true)
+    -- 所以包 ReaderStatistics 的实例方法：get_widget 为真（屏保调用）时返回我们的
+    -- widget；为假（菜单调用）时原样走官方逻辑。
+    local stats = self.ui and self.ui.statistics
+    if not stats then return end
+    if rawget(stats, "_densestats_wrapped") then return end
+    stats._densestats_wrapped = true
+
+    local orig = stats.onShowReaderProgress
+    stats.onShowReaderProgress = function(this, get_widget)
+        if get_widget then
             local ok, w = pcall(buildWidget)
             if ok and w then return w end
             logger.warn("densestats: build failed:", w)
-            if prev then return prev(...) end
-            return nil
         end
-        return orig_setup(this, event, event_message)
+        return orig(this, get_widget)
     end
 end
 
