@@ -387,14 +387,18 @@ local function finishedRows(fin_data, usable_w, budget_h)
         return (a.title or "") < (b.title or "")
     end)
 
-    local date_w = Screen:scaleBySize(96)
+    local date_w = Screen:scaleBySize(72)
     local gap_w = Screen:scaleBySize(14)
     local line_gap = Screen:scaleBySize(7)
     local used, shown = 0, 0
 
+    local last_month = nil
     for _, t in ipairs(items) do
-        local date = (t.date and t.date ~= "") and t.date or (t.month or "")
-        local dw = txt(date, FACE_M(), date_w)
+        -- 按月展示：同一个月里只有第一行标月份，后面几行留空，读起来自然成组
+        local month = t.month or ((t.date or ""):sub(1, 7))
+        local label = (month ~= last_month) and month or ""
+        last_month = month
+        local dw = txt(label, FACE_M(), date_w)
         local tw = txt(t.title or "", FACE_L(), usable_w - date_w - gap_w)
         local h = math.max(dw:getSize().h, tw:getSize().h)
         if used + h + line_gap > budget_h then break end
