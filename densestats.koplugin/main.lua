@@ -35,6 +35,7 @@ local Stats = require("stats")
 local Widget = require("ui/widget/widget")
 local lfs = require("libs/libkoreader-lfs")
 local logger = require("logger")
+local Size = require("ui/size")
 local Screen = Device.screen
 
 -- 函数，或带 __call 的表，都算"可调用"
@@ -261,10 +262,14 @@ end
 -- 字号一律用 KOReader 的命名档位（font.lua 的 sizemap），不写死数字：
 -- getFace 内部按屏幕 DPI 做 scaleBySize，档位本身也跟着 KOReader 的字号体系走。
 -- 官方 readerprogress.lua 就是这么干的（smallffont / ffont / largeffont）。
-local function FACE_L() return Font:getFace("smallffont") end    -- 15：标签、附注
-local function FACE_V() return Font:getFace("largeffont") end    -- 25：大数值
-local function FACE_M() return Font:getFace("ffont") end         -- 20：正文、书名
-local function FACE_S() return Font:getFace("smallffont") end    -- 15：页脚
+-- 只用 KOReader 的三档字号，且按"角色"固定分配，同一角色全篇一致：
+--   强调(25) 只给统计大数字；正文(20) 给书名、日期这类主体内容；
+--   辅助(15) 给标签、说明、明细、页脚。
+-- 之前是哪里觉得不合适就单独调一处，屏幕上同时出现四五种大小，看着就乱。
+local function FACE_V() return Font:getFace("largeffont") end    -- 25 强调
+local function FACE_M() return Font:getFace("ffont") end         -- 20 正文
+local function FACE_L() return Font:getFace("smallffont") end    -- 15 辅助
+local FACE_S = FACE_L
 
 local function txt(s, face, max_width)
     return TextWidget:new{ text = tostring(s), face = face, max_width = max_width }
@@ -299,11 +304,11 @@ local function cell(label, value, col_w, extra)
     local g = VerticalGroup:new{
         align = "left",
         txt(label, FACE_L(), col_w),
-        VerticalSpan:new{ width = Screen:scaleBySize(4) },
+        VerticalSpan:new{ width = Size.span.vertical_large },
         txt(value, FACE_V(), col_w),
     }
     if extra then
-        table.insert(g, VerticalSpan:new{ width = Screen:scaleBySize(4) })
+        table.insert(g, VerticalSpan:new{ width = Size.span.vertical_large })
         table.insert(g, txt(extra, FACE_L(), col_w))
     end
     return g
@@ -396,7 +401,7 @@ local function currentBook(cur, usable_w)
         return g
     end
     table.insert(g, txt(cur.title, FACE_M(), usable_w))
-    table.insert(g, VerticalSpan:new{ width = Screen:scaleBySize(6) })
+    table.insert(g, VerticalSpan:new{ width = Size.padding.default })
 
     -- 进度条
     local bar_w = usable_w
@@ -405,7 +410,7 @@ local function currentBook(cur, usable_w)
         rect(fill, Screen:scaleBySize(10)),
         HorizontalSpan:new{ width = 1 },
     })
-    table.insert(g, VerticalSpan:new{ width = Screen:scaleBySize(6) })
+    table.insert(g, VerticalSpan:new{ width = Size.padding.default })
 
     -- 有些格式（如刚打开、或 total_pages 缺失）拿不到总页数，别显示 "0 / 0 页"
     local line
@@ -437,12 +442,12 @@ local function finishedRows(fin_data, usable_w, budget_h)
     local date_w = ((ok_p and psz and psz.w) or Screen:scaleBySize(80))
                    + Screen:scaleBySize(6)
     local gap_w = Screen:scaleBySize(14)
-    local line_gap = Screen:scaleBySize(7)
+    local line_gap = Size.padding.large
     local used, shown = 0, 0
 
     for _, t in ipairs(items) do
         local dw = txt(t.label, FACE_M(), date_w)
-        local tw = txt(t.title or "", FACE_L(), usable_w - date_w - gap_w)
+        local tw = txt(t.title or "", FACE_M(), usable_w - date_w - gap_w)
         local h = math.max(dw:getSize().h, tw:getSize().h)
         if used + h + line_gap > budget_h then break end
         table.insert(g, HorizontalGroup:new{ align = "center",
