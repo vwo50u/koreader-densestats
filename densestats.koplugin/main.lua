@@ -37,6 +37,16 @@ local lfs = require("libs/libkoreader-lfs")
 local logger = require("logger")
 local Screen = Device.screen
 
+-- 函数，或带 __call 的表，都算"可调用"
+local function isCallable(v)
+    if type(v) == "function" then return true end
+    if type(v) == "table" then
+        local mt = getmetatable(v)
+        return mt ~= nil and mt.__call ~= nil
+    end
+    return false
+end
+
 -- ============================ 可调参数 ============================
 local CFG = {
     max_sec = 120,          -- 单页停留时间上限（秒），与 statistics 插件默认一致
@@ -517,6 +527,7 @@ local function buildWidget()
     end
 
     return CenterContainer:new{
+        densestats = true,   -- 标记：用来验证屏保确实拿到了我们的部件
         dimen = Screen:getSize(),
         FrameContainer:new{
             width = W, height = H,
@@ -564,26 +575,32 @@ function DenseStats:init()
     if self.ui and self.ui.menu then
         self.ui.menu:registerToMainMenu(self)
     end
-
-    -- 睡眠屏幕接管点（对 KOReader 2026.07 核实过）：
-    --   screensaver.lua:548
-    --     widget = self.ui.statistics:onShowReaderProgress(true)
-    -- 所以包 ReaderStatistics 的实例方法：get_widget 为真（屏保调用）时返回我们的
-    -- widget；为假（菜单调用）时原样走官方逻辑。
     self:_maybeAutoShow()
     maybeRescanLater()
+    self:_hookStatistics()
+end
 
+-- 睡眠屏幕接管点（对 KOReader 2026.07 核实过）：
+--   screensaver.lua:548  widget = self.ui.statistics:onShowReaderProgress(true)
+-- 所以包 ReaderStatistics 的实例方法：get_widget 为真（屏保调用）时返回我们的
+-- widget，为假（菜单调用）时原样走官方逻辑。
+--
+-- 时机很关键：插件按目录名字母序实例化，densestats 排在 statistics 前面，
+-- 所以 init() 跑的时候 self.ui.statistics 还不存在，在那里挂钩子必然落空
+-- （症状：菜单预览正常，屏保却没被接管）。onReaderReady 时才保证已经就绪。
+function DenseStats:_hookStatistics()
     local stats = self.ui and self.ui.statistics
-    if not stats then return end
-    -- 这个接管点在 KOReader 2026.07 上核实过。更老的版本走的是
-    -- Screensaver.getReaderProgress，方法名对不上就什么都不会发生——
-    -- 与其静默失效，不如在日志里留一句，方便对着 crash.log 判断。
-    if type(stats.onShowReaderProgress) ~= "function" then
-        logger.warn("densestats: 未找到 onShowReaderProgress，睡眠屏幕接管失败，"
-                    .. "该 KOReader 版本可能过旧；菜单里的预览仍可用")
-        return
+    if not stats then return false end
+    if rawget(stats, "_densestats_wrapped") then return true end
+    -- KOReader 2026.07 把插件的 onXxx 事件处理器包成了"可调用的表"
+    -- （字段 f/fname/context，metatable 上有 __call，用于出错时打印插件栈），
+    -- 所以不能只认 type == "function"，否则接管永远挂不上。
+    if not isCallable(stats.onShowReaderProgress) then
+        logger.warn("densestats: onShowReaderProgress 不可调用（类型 "
+                    .. type(stats.onShowReaderProgress) .. "），睡眠屏幕接管失败；"
+                    .. "菜单里的预览仍可用")
+        return false
     end
-    if rawget(stats, "_densestats_wrapped") then return end
     stats._densestats_wrapped = true
 
     local orig = stats.onShowReaderProgress
@@ -595,12 +612,23 @@ function DenseStats:init()
         end
         return orig(this, get_widget)
     end
+    logger.info("densestats: 睡眠屏幕接管已挂载")
+    return true
 end
 
 -- 调试用：设 DENSESTATS_AUTOSHOW=1 启动时自动弹出预览，方便截图。
 function DenseStats:onReaderReady()
     self:_maybeAutoShow()
     maybeRescanLater()
+    local hooked = self:_hookStatistics()
+    if hooked and os.getenv("DENSESTATS_DEBUG") == "1" then
+        -- 直接走一遍屏保那条路，确认返回的是我们的部件而不是内置页面
+        local ok, w = pcall(function()
+            return self.ui.statistics:onShowReaderProgress(true)
+        end)
+        logger.info("densestats: 屏保路径自检 ok=" .. tostring(ok)
+                    .. " 是我们的部件=" .. tostring(ok and type(w) == "table" and w.densestats == true))
+    end
 end
 
 function DenseStats:_maybeAutoShow()
