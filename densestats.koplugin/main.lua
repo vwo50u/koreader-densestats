@@ -31,7 +31,6 @@ local VerticalGroup = require("ui/widget/verticalgroup")
 local VerticalSpan = require("ui/widget/verticalspan")
 local WidgetContainer = require("ui/widget/container/widgetcontainer")
 local Finished = require("finished")
-local Moon = require("moon")
 local Stats = require("stats")
 local Widget = require("ui/widget/widget")
 local lfs = require("libs/libkoreader-lfs")
@@ -418,57 +417,12 @@ local function finishedRows(fin_data, usable_w, budget_h)
     return g
 end
 
--- 月相圆盘：白底上把"暗面"涂黑。
--- 明暗分界是个椭圆：某一行的半宽为 w 时，分界线横坐标 xt = ±w·cos(2πp)。
-local MoonWidget = Widget:extend{ radius = 8, phase = 0 }
-
-function MoonWidget:getSize()
-    return Geom:new{ w = self.radius * 2 + 2, h = self.radius * 2 + 2 }
-end
-
-function MoonWidget:paintTo(bb, x, y)
-    local r = self.radius
-    local cx, cy = x + r + 1, y + r + 1
-    local p = self.phase
-    local c = math.cos(2 * math.pi * p)
-    local waxing = p < 0.5
-    for dy = -r, r do
-        local w = math.floor(math.sqrt(math.max(0, r * r - dy * dy)))
-        if w > 0 then
-            local xt = waxing and (w * c) or (-w * c)
-            local x0, x1
-            if waxing then x0, x1 = -w, xt        -- 盈：亮在右，暗在左
-            else x0, x1 = xt, w end               -- 亏：亮在左，暗在右
-            if x1 > x0 then
-                bb:paintRect(cx + math.floor(x0), cy + dy,
-                             math.ceil(x1 - x0), 1, Blitbuffer.COLOR_BLACK)
-            end
-        end
-    end
-    -- 描一圈边，免得满月时整个盘子消失在白底里
-    for dy = -r, r do
-        local w = math.floor(math.sqrt(math.max(0, r * r - dy * dy)))
-        if w > 0 then
-            bb:paintRect(cx - w, cy + dy, 2, 1, Blitbuffer.COLOR_BLACK)
-            bb:paintRect(cx + w - 1, cy + dy, 2, 1, Blitbuffer.COLOR_BLACK)
-        end
-    end
-end
-
--- 页脚：日期 · 电量 · 月相（小图 + 相名 + 月龄）
+-- 页脚：时间 · 电量，整行居中
 local function footerRow(usable_w)
-    local now = os.time()
     local batt = ""
     local ok_p, pd = pcall(function() return Device:getPowerDevice() end)
     if ok_p and pd then batt = string.format("  ·  %d%%", pd:getCapacity()) end
-
-    local g = HorizontalGroup:new{ align = "center" }
-    table.insert(g, txt(os.date("%Y-%m-%d %H:%M") .. batt, FACE_S()))
-    table.insert(g, HorizontalSpan:new{ width = Screen:scaleBySize(14) })
-    table.insert(g, MoonWidget:new{ radius = Screen:scaleBySize(9), phase = Moon.phase01(now) })
-    table.insert(g, HorizontalSpan:new{ width = Screen:scaleBySize(6) })
-    table.insert(g, txt(string.format("%s · 月龄 %.1f", Moon.name(now), Moon.age(now)), FACE_S()))
-    return g
+    return centered(usable_w, txt(os.date("%Y-%m-%d %H:%M") .. batt, FACE_S()))
 end
 
 local function buildWidget()
