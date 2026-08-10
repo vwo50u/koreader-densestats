@@ -17,7 +17,20 @@ function M.isSidecarFile(name)
 end
 
 -- 解析单个 sidecar，返回 status, modified（都可能为 nil）
+-- 优先用字符串扫描：sidecar 里可能存着大量标注，整个 dofile 解析一遍又慢又没必要，
+-- 而且不必执行文件内容。扫不到再退回 loader。
 function M.readSidecar(path, loader)
+    local f = io.open(path, "r")
+    if f then
+        local text = f:read("*a")
+        f:close()
+        if text then
+            local status = text:match('%["status"%]%s*=%s*"([^"]*)"')
+            local modified = text:match('%["modified"%]%s*=%s*"([^"]*)"')
+            if status then return status, modified end
+            if not text:find("summary", 1, true) then return nil end
+        end
+    end
     loader = loader or dofile
     local ok, t = pcall(loader, path)
     if not ok or type(t) ~= "table" then return nil end

@@ -304,13 +304,18 @@ local function hrule(w)
     }
 end
 
-local function cell(label, value, col_w)
-    return VerticalGroup:new{
+local function cell(label, value, col_w, extra)
+    local g = VerticalGroup:new{
         align = "left",
         txt(label, FACE_L(), col_w),
         VerticalSpan:new{ width = Screen:scaleBySize(4) },
         txt(value, FACE_V(), col_w),
     }
+    if extra then
+        table.insert(g, VerticalSpan:new{ width = Screen:scaleBySize(4) })
+        table.insert(g, txt(extra, FACE_L(), col_w))
+    end
+    return g
 end
 
 local function cellRow(items, usable_w)
@@ -319,7 +324,7 @@ local function cellRow(items, usable_w)
     local inner_w = col_w - Screen:scaleBySize(8)
     local cells, max_h = {}, 0
     for i, it in ipairs(items) do
-        local c = cell(it[1], it[2], inner_w)
+        local c = cell(it[1], it[2], inner_w, it[3])
         cells[i] = c
         local ok, h = pcall(function() return c:getSize().h end)
         if ok and h and h > max_h then max_h = h end
@@ -533,10 +538,8 @@ local function buildWidget()
         { "连续天数", tostring(d.streak) },
         { "有效日均", fmtHM(d.avg_active) },
         { "累计", fmtHours(d.total) },
+        { "今日页数", tostring(d.pages_today), string.format("本周 %d 页", d.pages_week) },
     }, usable))
-    table.insert(root, VerticalSpan:new{ width = Screen:scaleBySize(12) })
-    table.insert(root, txt(string.format("今日 %d 页  ·  本周 %d 页",
-        d.pages_today, d.pages_week), FACE_L(), usable))
     table.insert(root, VerticalSpan:new{ width = Screen:scaleBySize(22) })
 
     local curve, peak = curveWidget(d.curve, usable)
