@@ -5,16 +5,16 @@ return {
         ["time"] = 0,
     },
     ["awake_state"] = {
-        ["percentage"] = 59,
-        ["timestamp"] = 1.786377449148e+15,
+        ["percentage"] = 57,
+        ["timestamp"] = 1.7863775015854e+15,
     },
     ["charging"] = {
         ["percentage"] = 0,
         ["time"] = 0,
     },
     ["charging_state"] = {
-        ["percentage"] = 59,
-        ["timestamp"] = 1.7863774491481e+15,
+        ["percentage"] = 57,
+        ["timestamp"] = 1.7863775015854e+15,
     },
     ["discharging"] = {
         ["percentage"] = 0,
