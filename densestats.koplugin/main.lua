@@ -220,7 +220,10 @@ local function maybeRescanLater()
     local cache = loadCache()
     if cache and (os.time() - (cache.ts or 0)) < CFG.finished_cache_hours * 3600 then return end
     rescan_scheduled = true
-    UIManager:scheduleIn(20, function()   -- 别和开书抢时间
+    -- 有旧缓存就慢慢来（20 秒后），别和开书抢时间；
+    -- 一次都没扫过就尽快扫，否则首次安装后的头一屏"已读完"永远是空的
+    local delay = cache and 20 or 1
+    UIManager:scheduleIn(delay, function()
         rescan_scheduled = false
         rescanFinished()
     end)
@@ -262,9 +265,11 @@ local function hrule(w)
     }
 end
 
-local function cell(label, value, col_w, extra)
+-- align 只作用于小块内部：三行以块内中轴对齐。
+-- 小块整体仍由 cellRow 靠左摆放，才能和上一排的四列对齐。
+local function cell(label, value, col_w, extra, align)
     local g = VerticalGroup:new{
-        align = "left",
+        align = align or "left",
         txt(label, FACE_L(), col_w),
         VerticalSpan:new{ width = Screen:scaleBySize(4) },
         txt(value, FACE_V(), col_w),
@@ -282,7 +287,7 @@ local function cellRow(items, usable_w)
     local inner_w = col_w - Screen:scaleBySize(8)
     local cells, max_h = {}, 0
     for i, it in ipairs(items) do
-        local c = cell(it[1], it[2], inner_w, it[3])
+        local c = cell(it[1], it[2], inner_w, it[3], it[4])
         cells[i] = c
         local ok, h = pcall(function() return c:getSize().h end)
         if ok and h and h > max_h then max_h = h end
@@ -484,7 +489,7 @@ local function buildWidget()
         { "连续天数", tostring(d.streak) },
         { "有效日均", fmtHM(d.avg_active) },
         { "累计", fmtHours(d.total) },
-        { "今日页数", tostring(d.pages_today), string.format("本周 %d 页", d.pages_week) },
+        { "今日页数", tostring(d.pages_today), string.format("本周 %d 页", d.pages_week), "center" },
     }, usable))
     table.insert(root, VerticalSpan:new{ width = Screen:scaleBySize(22) })
 
@@ -632,7 +637,7 @@ function DenseStats:_maybeAutoShow()
     if os.getenv("DENSESTATS_AUTOSHOW") ~= "1" then return end
     if DenseStats._autoshown then return end
     DenseStats._autoshown = true
-    UIManager:scheduleIn(2.5, function()
+    UIManager:scheduleIn(6, function()
         UIManager:show(Preview:new{})
     end)
 end
