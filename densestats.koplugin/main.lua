@@ -265,11 +265,11 @@ local function hrule(w)
     }
 end
 
--- 小块内部一律以块内中轴对齐（标签、数值、附注共用中轴）；
--- 小块整体仍由 cellRow 靠左摆放，才能和上下相邻那排的四列对齐。
+-- 小块内部一律左对齐：标签、数值、附注共用左边缘，
+-- 位数变化只往右长，数字不会左右晃。小块本身也由 cellRow 靠左摆放。
 local function cell(label, value, col_w, extra)
     local g = VerticalGroup:new{
-        align = "center",
+        align = "left",
         txt(label, FACE_L(), col_w),
         VerticalSpan:new{ width = Screen:scaleBySize(4) },
         txt(value, FACE_V(), col_w),
