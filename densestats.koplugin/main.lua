@@ -431,13 +431,22 @@ local function buildWidget()
     local usable = W - pad * 2
     local root = VerticalGroup:new{ align = "left" }
 
+    -- 区块之间的间距做成"弹性"的：先按基准值排版，最后把多出来的高度平摊回去。
+    -- 原来的做法是把剩余空间一股脑塞在末尾，内容全挤在屏幕上半部分。
+    local flex = {}
+    local function gap(px)
+        local sp = VerticalSpan:new{ width = Screen:scaleBySize(px) }
+        flex[#flex + 1] = sp
+        table.insert(root, sp)
+    end
+
     table.insert(root, cellRow({
         { "今日", fmtHM(d.today) }, { "本周", fmtHM(d.week) },
         { "本月", fmtHM(d.month) }, { "今年", fmtHM(d.year) },
     }, usable))
-    table.insert(root, VerticalSpan:new{ width = Screen:scaleBySize(16) })
+    gap(16)
     table.insert(root, hrule(usable))
-    table.insert(root, VerticalSpan:new{ width = Screen:scaleBySize(16) })
+    gap(16)
 
     table.insert(root, cellRow({
         { "连续天数", tostring(d.streak) },
@@ -445,21 +454,21 @@ local function buildWidget()
         { "累计", fmtHours(d.total) },
         { "今日页数", tostring(d.pages_today), string.format("本周 %d 页", d.pages_week) },
     }, usable))
-    table.insert(root, VerticalSpan:new{ width = Screen:scaleBySize(22) })
+    gap(22)
 
     local curve, peak = curveWidget(d.curve, usable)
     table.insert(root, txt(string.format("最近 30 天 · 共 %s · 峰值 %s",
         fmtHM(d.curve_total), fmtHM(peak)), FACE_L()))
-    table.insert(root, VerticalSpan:new{ width = Screen:scaleBySize(5) })
+    gap(5)
     table.insert(root, centered(usable, curve))
-    table.insert(root, VerticalSpan:new{ width = Screen:scaleBySize(22) })
+    gap(22)
     table.insert(root, centered(usable, hrule(usable)))
-    table.insert(root, VerticalSpan:new{ width = Screen:scaleBySize(16) })
+    gap(16)
 
     table.insert(root, currentBook(data.current, usable))
-    table.insert(root, VerticalSpan:new{ width = Screen:scaleBySize(16) })
+    gap(16)
     table.insert(root, centered(usable, hrule(usable)))
-    table.insert(root, VerticalSpan:new{ width = Screen:scaleBySize(16) })
+    gap(16)
 
     if os.getenv("DENSESTATS_DEBUG") == "1" then
         local function wof(w) local ok, sz = pcall(function() return w:getSize() end)
@@ -476,7 +485,7 @@ local function buildWidget()
         fin_title = string.format("已读完 · 共 %d 本", fin_data.total)
     end
     table.insert(root, txt(fin_title, FACE_L()))
-    table.insert(root, VerticalSpan:new{ width = Screen:scaleBySize(8) })
+    gap(8)
 
     local footer = footerRow(usable)
     local ok_f, fh = pcall(function() return footer:getSize().h end)
@@ -487,18 +496,22 @@ local function buildWidget()
     local budget = H - pad * 2 - used_h - footer_h - Screen:scaleBySize(12) - Screen:scaleBySize(12)
     table.insert(root, finishedRows(fin_data, usable, math.max(0, budget)))
 
-    table.insert(root, VerticalSpan:new{ width = Screen:scaleBySize(12) })
+    gap(12)
     table.insert(root, footer)
     root:resetLayout()
 
-    -- 把内容补到整屏高，否则外层会按内容高度居中，屏幕上下会露出底层画面
+    -- 把剩余高度平摊到各区块之间，让内容纵向铺满整屏、页脚落到底部。
+    -- 注意 getSize() 会缓存 _offsets，改完必须 resetLayout()，
+    -- 否则 paintTo 时 _offsets[i] 为 nil 直接崩（verticalgroup.lua:51）。
     local ok_h, ch = pcall(function() return root:getSize().h end)
-    if ok_h and ch then
+    if ok_h and ch and #flex > 0 then
         local rest = H - pad * 2 - ch
         if rest > 0 then
-            table.insert(root, VerticalSpan:new{ width = rest })
-            -- getSize() 会把 _offsets 缓存住；插完新元素必须清掉，
-            -- 否则 paintTo 时 self._offsets[i] 为 nil，直接崩（verticalgroup.lua:51）
+            local each = math.floor(rest / #flex)
+            local extra = rest - each * #flex          -- 除不尽的余数给最后一个
+            for i, sp in ipairs(flex) do
+                sp.width = sp.width + each + (i == #flex and extra or 0)
+            end
             root:resetLayout()
         end
     end
