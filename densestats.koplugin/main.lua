@@ -43,6 +43,7 @@ local CFG = {
     max_sec = 120,          -- 单页停留时间上限（秒），与 statistics 插件默认一致
     week_start = 2,         -- 1=周日 2=周一
     curve_days = 30,
+    window_days = 400,   -- 逐日明细只查这个窗口；累计另走 book 表汇总
     finished_cache_hours = 12,  -- sidecar 扫描结果缓存时长
     tz_offset = 0,              -- start_time 与设备墙钟一致，真机上为 0；设 nil 则自动推断
 }
@@ -84,33 +85,38 @@ local function collect()
     local data = {}
     local function query()
 
+    -- 时长和页数一次扫完：分开查等于把整表扫两遍。
+    -- 只取近 window_days 天——曲线只要 30 天，今日/本周/本月/今年最多回溯到年初，
+    -- 400 天足够覆盖，全表扫描留给下面那条便宜的汇总。
+    local since = os.time() - CFG.window_days * 86400
     local sql_days = string.format([[
-        SELECT date(start_time + %d, 'unixepoch') AS d,
-               SUM(MIN(duration, %d)) AS s
+        SELECT date(start_time + %d, 'unixepoch')      AS d,
+               SUM(MIN(duration, %d))                  AS s,
+               COUNT(DISTINCT id_book * 1000000 + page) AS n
         FROM page_stat_data
-        GROUP BY d ORDER BY d;
-    ]], off, cap)
-    local by_day, day_list = {}, {}
-    for _, r in ipairs(rowsOf(conn:exec(sql_days), 2)) do
-        local d, s = tostring(r[1]), tonumber(r[2]) or 0
-        by_day[d] = s
-        day_list[#day_list + 1] = d
+        WHERE start_time >= %d
+        GROUP BY d;
+    ]], off, cap, since)
+    local by_day, pages_by_day = {}, {}
+    for _, r in ipairs(rowsOf(conn:exec(sql_days), 3)) do
+        local d = tostring(r[1])
+        by_day[d] = tonumber(r[2]) or 0
+        pages_by_day[d] = tonumber(r[3]) or 0
     end
     data.by_day = by_day
-    data.day_list = day_list
-
-    -- 每日页数：同一页反复停留只算一次，与 KOReader 自己的统计口径基本一致（±1 页）
-    local sql_pages = string.format([[
-        SELECT date(start_time + %d, 'unixepoch') AS d,
-               COUNT(DISTINCT id_book || '-' || page) AS n
-        FROM page_stat_data
-        GROUP BY d;
-    ]], off)
-    local pages_by_day = {}
-    for _, r in ipairs(rowsOf(conn:exec(sql_pages), 2)) do
-        pages_by_day[tostring(r[1])] = tonumber(r[2]) or 0
-    end
     data.pages_by_day = pages_by_day
+
+    -- 累计时长直接取 book 表的汇总列（KOReader 写入时已按 max_sec 截断过，
+    -- 和上面逐行截断的结果一致——用真实库比对过），比全表求和快一个数量级。
+    -- 有记录的天数仍要全表扫一次，但只做 COUNT DISTINCT，代价可接受。
+    local totals = rowsOf(conn:exec([[
+        SELECT (SELECT SUM(total_read_time) FROM book),
+               (SELECT COUNT(DISTINCT date(start_time, 'unixepoch')) FROM page_stat_data);
+    ]]), 2)[1]
+    if totals then
+        data.total_all = tonumber(totals[1]) or 0
+        data.active_days_all = tonumber(totals[2]) or 0
+    end
 
     -- 当前在读 = 最近一次有阅读记录的那本
     local sql_cur = string.format([[

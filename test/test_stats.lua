@@ -83,5 +83,18 @@ ok(S.derive(zero, ts(2026,8,10)).streak == 1, "今天记 0 秒不算读过,从�
    S.derive(zero, ts(2026,8,10)).streak)
 ok(S.derive(nil, ts(2026,8,10)).total == 0, "data 为 nil 不炸")
 
+print("== derive：累计走全量汇总,逐日只覆盖窗口 ==")
+local win = { by_day = { ["2026-08-10"]=5375, ["2026-08-09"]=60 },
+              total_all = 999999, active_days_all = 300 }
+local dw = S.derive(win, ts(2026,8,10))
+ok(dw.total == 999999, "累计用 total_all,不是窗口内求和", dw.total)
+ok(dw.active_days == 300, "有记录天数用 active_days_all", dw.active_days)
+ok(math.floor(dw.avg_active) == 3333, "有效日均 = 累计/全量天数", dw.avg_active)
+ok(dw.window_total == 5435, "窗口内合计仍保留", dw.window_total)
+ok(dw.today == 5375, "今日不受影响", dw.today)
+local nofall = S.derive({ by_day = { ["2026-08-10"]=3600 } }, ts(2026,8,10))
+ok(nofall.total == 3600 and nofall.active_days == 1, "没给全量汇总时退回窗口值",
+   nofall.total .. "/" .. nofall.active_days)
+
 print(string.format("\n%d passed, %d failed", pass, fail))
 os.exit(fail == 0 and 0 or 1)

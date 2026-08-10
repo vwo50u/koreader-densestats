@@ -87,12 +87,16 @@ function M.derive(data, now, cfg)
     end
 
     -- "有记录的天"以真正读过（秒数 > 0）为准，0 秒或脏值不算
+    -- 累计和"有记录天数"优先用调用方给的全量汇总（逐日明细只覆盖近一年多，
+    -- 拿窗口内的数据当累计会少算）。没有就退回按窗口算。
     local active = 0
     for _, v in pairs(by_day) do
         if (tonumber(v) or 0) > 0 then active = active + 1 end
     end
-    d.active_days = active
-    d.avg_active = active > 0 and (d.total / active) or 0
+    d.window_total = d.total
+    d.total = tonumber(data and data.total_all) or d.total
+    d.active_days = tonumber(data and data.active_days_all) or active
+    d.avg_active = d.active_days > 0 and (d.total / d.active_days) or 0
 
     -- 连续天数：今天还没读不算断，从昨天往回数。
     -- 加上限兜底，防止数据异常（时钟回拨造出的怪日期）把循环拖死。
