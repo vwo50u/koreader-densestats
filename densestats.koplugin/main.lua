@@ -309,22 +309,38 @@ local function cell(label, value, col_w, extra)
     return g
 end
 
+-- 一排小块：两端对齐。第一块贴左边缘、最后一块贴右边缘，中间按剩余空间均分。
+-- 之前是"等宽列 + 每列左对齐"，最后一列的字只占列宽的一小截，
+-- 右边就空出一大块，看起来像左右边距不一样。
 local function cellRow(items, usable_w)
     local n = #items
-    local col_w = math.floor(usable_w / n)
-    local inner_w = col_w - Screen:scaleBySize(8)
-    local cells, max_h = {}, 0
+    if n == 0 then return VerticalGroup:new{} end
+    local cap_w = math.floor(usable_w / n)          -- 单块最大宽度，超了就截断
+    local cells, widths, total = {}, {}, 0
     for i, it in ipairs(items) do
-        local c = cell(it[1], it[2], inner_w, it[3])
+        local c = cell(it[1], it[2], cap_w, it[3])
         cells[i] = c
-        local ok, h = pcall(function() return c:getSize().h end)
-        if ok and h and h > max_h then max_h = h end
+        local ok, sz = pcall(function() return c:getSize() end)
+        widths[i] = (ok and sz and sz.w) or 0
+        total = total + widths[i]
     end
-    -- 每列包一个定宽 LeftContainer：HorizontalGroup 本身按内容宽度排，
-    -- 不定宽的话四列会各自漂移，标签和数值对不齐
+
     local g = HorizontalGroup:new{ align = "top" }
-    for _, c in ipairs(cells) do
-        table.insert(g, LeftContainer:new{ dimen = Geom:new{ w = col_w, h = max_h }, c })
+    if n == 1 then
+        table.insert(g, cells[1])
+        return g
+    end
+    local space = usable_w - total
+    local gap_w = math.floor(space / (n - 1))
+    local extra = space - gap_w * (n - 1)           -- 除不尽的余数塞进最后一个间隙
+    if gap_w < 0 then gap_w, extra = 0, 0 end       -- 内容撑满时退化为紧挨着
+    for i, c in ipairs(cells) do
+        table.insert(g, c)
+        if i < n then
+            table.insert(g, HorizontalSpan:new{
+                width = gap_w + (i == n - 1 and extra or 0),
+            })
+        end
     end
     return g
 end

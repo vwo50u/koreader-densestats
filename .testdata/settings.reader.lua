@@ -1,6 +1,5 @@
 -- /Users/a186r/dev/koreader-densestats/.testdata/settings.reader.lua
 return {
-    ["screen_dpi"] = 300,
     ["auto_save_settings_interval_minutes"] = 15,
     ["autoturn_distance"] = 1,
     ["autoturn_timeout_seconds"] = 0,
@@ -147,6 +146,7 @@ return {
     ["reader_footer_custom_text"] = "KOReader",
     ["reader_footer_custom_text_repetitions"] = "1",
     ["readtimer"] = {},
+    ["screen_dpi"] = 300,
     ["scroll_method"] = "classic",
     ["sdl_window"] = {
         ["height"] = 842,
