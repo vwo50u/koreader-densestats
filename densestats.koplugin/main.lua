@@ -29,6 +29,8 @@ local UIManager = require("ui/uimanager")
 local VerticalGroup = require("ui/widget/verticalgroup")
 local VerticalSpan = require("ui/widget/verticalspan")
 local WidgetContainer = require("ui/widget/container/widgetcontainer")
+local Finished = require("finished")
+local lfs = require("libs/libkoreader-lfs")
 local logger = require("logger")
 local Screen = Device.screen
 
@@ -38,8 +40,8 @@ local CFG = {
     week_start = 2,         -- 1=周日 2=周一
     curve_days = 30,
     top_books = 6,
-    finished_ratio = 0.97,  -- "读完"判定阈值（启发式）
     finished_months = 6,
+    finished_cache_hours = 12,  -- sidecar 扫描结果缓存时长
 }
 -- =================================================================
 
@@ -114,23 +116,54 @@ local function collect()
         data.books[#data.books + 1] = { title = tostring(r[1] or "?"), sec = tonumber(r[2]) or 0 }
     end
 
-    local sql_fin = string.format([[
-        SELECT strftime('%%Y-%%m', x.last_ts + %d, 'unixepoch') AS m, COUNT(*) AS n
-        FROM (
-            SELECT id_book, MAX(start_time) AS last_ts,
-                   MAX(page * 1.0 / NULLIF(total_pages, 0)) AS frac
-            FROM page_stat_data GROUP BY id_book
-        ) x
-        WHERE x.frac >= %f
-        GROUP BY m ORDER BY m DESC LIMIT %d;
-    ]], off, CFG.finished_ratio, CFG.finished_months)
-    data.finished = {}
-    for _, r in ipairs(rowsOf(conn:exec(sql_fin), 2)) do
-        data.finished[#data.finished + 1] = { month = tostring(r[1]), n = tonumber(r[2]) or 0 }
-    end
-
+    -- 读完本数不从数据库来：完成状态存在 sidecar 里（见 finished.lua）
     conn:close()
     return data
+end
+
+-- ==================== 读完统计（扫 sidecar，带缓存） ====================
+
+local function cachePath()
+    return DataStorage:getSettingsDir() .. "/densestats_finished.lua"
+end
+
+local function loadCache()
+    local ok, t = pcall(dofile, cachePath())
+    if ok and type(t) == "table" and type(t.months) == "table" then return t end
+    return nil
+end
+
+local function saveCache(summary)
+    local f = io.open(cachePath(), "w")
+    if not f then return end
+    f:write("return {\n  ts = ", tostring(os.time()), ",\n  total = ", tostring(summary.total), ",\n  months = {\n")
+    for m, n in pairs(summary.months) do
+        f:write(string.format("    [%q] = %d,\n", m, n))
+    end
+    f:write("  },\n}\n")
+    f:close()
+end
+
+-- 扫描根目录：集中存放的 docsettings 目录 + 书库主目录（sidecar 默认在书旁边）
+local function scanRoots()
+    local roots = { DataStorage:getDocSettingsDir() }
+    local home = G_reader_settings and G_reader_settings:readSetting("home_dir")
+    if home then roots[#roots + 1] = home end
+    return roots
+end
+
+local function getFinished(force)
+    local cache = loadCache()
+    if not force and cache and (os.time() - (cache.ts or 0)) < CFG.finished_cache_hours * 3600 then
+        return cache
+    end
+    local ok, summary = pcall(Finished.summarize, scanRoots(), lfs)
+    if not ok then
+        logger.warn("densestats: sidecar scan failed:", summary)
+        return cache
+    end
+    saveCache(summary)
+    return summary
 end
 
 -- ============================ 算数 ============================
@@ -308,10 +341,13 @@ local function buildWidget()
     table.insert(root, VerticalSpan:new{ width = Screen:scaleBySize(10) })
 
     local fin = {}
-    for _, f in ipairs(data.finished) do
-        fin[#fin + 1] = string.format("%s  %d", (f.month or ""):sub(6), f.n)
+    local fin_data = getFinished(false)
+    if fin_data then
+        for _, f in ipairs(Finished.recentMonths(fin_data, CFG.finished_months)) do
+            fin[#fin + 1] = string.format("%s  %d", f.month:sub(6), f.n)
+        end
     end
-    table.insert(root, txt("每月读完（估算）", FACE_L()))
+    table.insert(root, txt("每月读完", FACE_L()))
     table.insert(root, VerticalSpan:new{ width = Screen:scaleBySize(4) })
     table.insert(root, txt(#fin > 0 and table.concat(fin, "   ") or "—", FACE_M(), usable))
 
@@ -390,6 +426,16 @@ function DenseStats:init()
 end
 
 function DenseStats:addToMainMenu(menu_items)
+    menu_items.densestats_rescan = {
+        text = "重新扫描已读完书籍",
+        sorting_hint = "more_tools",
+        callback = function()
+            local r = getFinished(true)
+            UIManager:show(require("ui/widget/infomessage"):new{
+                text = r and string.format("已读完 %d 本", r.total) or "扫描失败",
+            })
+        end,
+    }
     menu_items.densestats_preview = {
         text = "预览：密集统计屏",
         sorting_hint = "more_tools",
