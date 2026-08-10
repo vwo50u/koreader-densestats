@@ -173,6 +173,10 @@ local function saveCache(summary)
     for m, n in pairs(summary.months) do
         f:write(string.format("    [%q] = %d,\n", m, n))
     end
+    f:write("  },\n  titles = {\n")
+    for _, t in ipairs(summary.titles or {}) do
+        f:write(string.format("    { title = %q, month = %q },\n", t.title, t.month))
+    end
     f:write("  },\n}\n")
     f:close()
 end
@@ -341,29 +345,47 @@ local function cellRow(items, usable_w)
     return g
 end
 
+-- 柱状曲线自绘：顺便画一条 1 小时参考虚线。
+-- 纵轴刻度取 max(峰值, 1 小时)，这样读得少的时候参考线也在画面里。
+local CurveWidget = Widget:extend{ values = nil, w = 0, h = 0, scale = 1, gap = 1 }
+
+function CurveWidget:getSize()
+    return Geom:new{ w = self.w, h = self.h }
+end
+
+function CurveWidget:paintTo(bb, x, y)
+    local n = #self.values
+    local gap = self.gap
+    local bar_w = math.max(2, math.floor((self.w - gap * (n - 1)) / n))
+    local leftover = self.w - (bar_w * n + gap * (n - 1))
+    local cx = x
+    for i, v in ipairs(self.values) do
+        local w = bar_w + (i <= leftover and 1 or 0)
+        local h = math.max(1, math.floor(self.h * v / self.scale))
+        bb:paintRect(cx, y + self.h - h, w, h, Blitbuffer.COLOR_BLACK)
+        cx = cx + w + gap
+    end
+    -- 1 小时参考线：虚线，画满整宽
+    local ry = y + self.h - math.floor(self.h * 3600 / self.scale)
+    local dash, step = Screen:scaleBySize(5), Screen:scaleBySize(10)
+    local px = x
+    while px < x + self.w do
+        bb:paintRect(px, ry, math.min(dash, x + self.w - px), Screen:scaleBySize(1),
+                     Blitbuffer.COLOR_GRAY)
+        px = px + step
+    end
+end
+
 local function curveWidget(curve, usable_w)
-    local n = #curve
-    local gap = Screen:scaleBySize(1)
-    local bar_w = math.max(2, math.floor((usable_w - gap * (n - 1)) / n))
-    -- 30 根柱子除不尽会剩几个像素，居中只会让两边各留一条缝；
-    -- 把余数摊回前几根柱子，整条曲线就和分隔线严丝合缝一样宽。
-    local leftover = usable_w - (bar_w * n + gap * (n - 1))
-    local max_h = Screen:scaleBySize(70)
     local peak = 1
     for _, v in ipairs(curve) do if v > peak then peak = v end end
-
-    local g = HorizontalGroup:new{ align = "bottom" }
-    for i, v in ipairs(curve) do
-        local h = math.max(1, math.floor(max_h * v / peak))
-        local w = bar_w + (i <= leftover and 1 or 0)
-        table.insert(g, VerticalGroup:new{
-            align = "center",
-            VerticalSpan:new{ width = max_h - h },
-            rect(w, h),
-        })
-        if i < n then table.insert(g, HorizontalSpan:new{ width = gap }) end
-    end
-    return g, peak
+    return CurveWidget:new{
+        values = curve,
+        w = usable_w,
+        h = Screen:scaleBySize(70),
+        scale = math.max(peak, 3600),
+        gap = Screen:scaleBySize(1),
+    }, peak
 end
 
 local function currentBook(cur, usable_w)
@@ -550,7 +572,7 @@ local function buildWidget()
     table.insert(root, VerticalSpan:new{ width = Screen:scaleBySize(22) })
 
     local curve, peak = curveWidget(d.curve, usable)
-    table.insert(root, txt(string.format("最近 30 天 · 共 %s · 峰值 %s",
+    table.insert(root, txt(string.format("最近 30 天 · 共 %s · 峰值 %s · 虚线 1h",
         fmtHM(d.curve_total), fmtHM(peak)), FACE_L()))
     table.insert(root, VerticalSpan:new{ width = Screen:scaleBySize(5) })
     table.insert(root, centered(usable, curve))
@@ -558,8 +580,6 @@ local function buildWidget()
     table.insert(root, centered(usable, hrule(usable)))
     table.insert(root, VerticalSpan:new{ width = Screen:scaleBySize(16) })
 
-    table.insert(root, txt("当前在读", FACE_L()))
-    table.insert(root, VerticalSpan:new{ width = Screen:scaleBySize(6) })
     table.insert(root, currentBook(data.current, usable))
     table.insert(root, VerticalSpan:new{ width = Screen:scaleBySize(16) })
     table.insert(root, centered(usable, hrule(usable)))
@@ -568,8 +588,9 @@ local function buildWidget()
     if os.getenv("DENSESTATS_DEBUG") == "1" then
         local function wof(w) local ok, sz = pcall(function() return w:getSize() end)
             return (ok and sz and sz.w) or -1 end
-        logger.info(string.format("densestats widths: screen=%d pad=%d usable=%d curve=%d hrule=%d root=%d",
-            W, pad, usable, wof(curve), wof(hrule(usable)), wof(root)))
+        logger.info(string.format("densestats widths: screen=%d pad=%d usable=%d curve=%d hrule=%d root=%d col=%d v9999=%d wk9999=%d",
+            W, pad, usable, wof(curve), wof(hrule(usable)), wof(root),
+            math.floor(usable / 4), wof(txt("9999", FACE_V())), wof(txt("本周 9999 页", FACE_L()))))
     end
 
     -- 已读完：先量此刻用掉多少高度，剩下的（扣掉页脚）全给它，装不下就截断
