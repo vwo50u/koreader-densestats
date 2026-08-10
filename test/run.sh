@@ -3,6 +3,7 @@
 set -e
 cd "$(dirname "$0")/.."
 KO="${KOREADER_APP:-/Applications/KOReader.app}/Contents/koreader"
-exec env LUA_PATH="$KO/?.lua;$KO/frontend/?.lua;;" \
+env LUA_PATH="$KO/?.lua;$KO/frontend/?.lua;;" \
          LUA_CPATH="$KO/?.so;$KO/libs/?.so;;" \
      "$KO/luajit" test/test_finished.lua
+env LUA_PATH="$KO/?.lua;$KO/frontend/?.lua;;" LUA_CPATH="$KO/?.so;$KO/libs/?.so;;" "$KO/luajit" test/test_moon.lua

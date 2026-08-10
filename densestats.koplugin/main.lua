@@ -22,6 +22,7 @@ local GestureRange = require("ui/gesturerange")
 local HorizontalGroup = require("ui/widget/horizontalgroup")
 local HorizontalSpan = require("ui/widget/horizontalspan")
 local InputContainer = require("ui/widget/container/inputcontainer")
+local LeftContainer = require("ui/widget/container/leftcontainer")
 local LineWidget = require("ui/widget/linewidget")
 local SQ3 = require("lua-ljsqlite3/init")
 local TextWidget = require("ui/widget/textwidget")
@@ -30,6 +31,8 @@ local VerticalGroup = require("ui/widget/verticalgroup")
 local VerticalSpan = require("ui/widget/verticalspan")
 local WidgetContainer = require("ui/widget/container/widgetcontainer")
 local Finished = require("finished")
+local Moon = require("moon")
+local Widget = require("ui/widget/widget")
 local lfs = require("libs/libkoreader-lfs")
 local logger = require("logger")
 local Screen = Device.screen
@@ -42,6 +45,7 @@ local CFG = {
     top_books = 6,
     finished_months = 6,
     finished_cache_hours = 12,  -- sidecar 扫描结果缓存时长
+    tz_offset = 0,              -- start_time 与设备墙钟一致，真机上为 0；设 nil 则自动推断
 }
 -- =================================================================
 
@@ -49,6 +53,10 @@ local CFG = {
 -- 因此在设备上 tzOffset() 返回 0，分组结果与 KOReader 自身完全一致（已用真实库核对）。
 -- 在别的机器上直接读这个库做 SQL 时，偏移应当填 0 而不是 +8h。
 local function tzOffset()
+    -- 显式覆盖优先（真机上应为 0；在别的机器上读 Kindle 的库做对比测试时也用 0）
+    local env = os.getenv("DENSESTATS_TZ_OFFSET")
+    if env then return tonumber(env) or 0 end
+    if CFG.tz_offset then return CFG.tz_offset end
     local now = os.time()
     local u = os.date("!*t", now)
     u.isdst = false
@@ -106,14 +114,26 @@ local function collect()
     data.by_day = by_day
     data.day_list = day_list
 
-    local sql_books = string.format([[
-        SELECT b.title, SUM(MIN(p.duration, %d)) AS s
+    -- 当前在读 = 最近一次有阅读记录的那本
+    local sql_cur = string.format([[
+        SELECT b.title,
+               SUM(MIN(p.duration, %d))                        AS total_sec,
+               MAX(p.page * 1.0 / NULLIF(p.total_pages, 0))    AS frac,
+               MAX(p.page)                                     AS page,
+               MAX(p.total_pages)                              AS pages
         FROM page_stat_data p JOIN book b ON b.id = p.id_book
-        GROUP BY p.id_book ORDER BY s DESC LIMIT %d;
-    ]], cap, CFG.top_books)
-    data.books = {}
-    for _, r in ipairs(rowsOf(conn:exec(sql_books), 2)) do
-        data.books[#data.books + 1] = { title = tostring(r[1] or "?"), sec = tonumber(r[2]) or 0 }
+        WHERE p.id_book = (SELECT id_book FROM page_stat_data ORDER BY start_time DESC LIMIT 1)
+        GROUP BY p.id_book;
+    ]], cap)
+    local cur = rowsOf(conn:exec(sql_cur), 5)[1]
+    if cur then
+        data.current = {
+            title = tostring(cur[1] or "?"),
+            sec   = tonumber(cur[2]) or 0,
+            frac  = tonumber(cur[3]) or 0,
+            page  = tonumber(cur[4]) or 0,
+            pages = tonumber(cur[5]) or 0,
+        }
     end
 
     -- 读完本数不从数据库来：完成状态存在 sidecar 里（见 finished.lua）
@@ -146,9 +166,19 @@ end
 
 -- 扫描根目录：集中存放的 docsettings 目录 + 书库主目录（sidecar 默认在书旁边）
 local function scanRoots()
-    local roots = { DataStorage:getDocSettingsDir() }
-    local home = G_reader_settings and G_reader_settings:readSetting("home_dir")
-    if home then roots[#roots + 1] = home end
+    local roots, seen = {}, {}
+    local function add(d)
+        if d and d ~= "" and not seen[d] then seen[d] = true; roots[#roots + 1] = d end
+    end
+    add(DataStorage:getDocSettingsDir())   -- 集中存放模式
+    if G_reader_settings then
+        -- 默认 "doc" 模式下 sidecar 在书旁边，所以还得扫书库。
+        -- home_dir 可能没设过（新装、或从没设过主目录），退回最后一次浏览/打开的位置。
+        add(G_reader_settings:readSetting("home_dir"))
+        add(G_reader_settings:readSetting("lastdir"))
+        local lastfile = G_reader_settings:readSetting("lastfile")
+        if lastfile then add(lastfile:match("^(.*)/[^/]*$")) end
+    end
     return roots
 end
 
@@ -215,9 +245,74 @@ end
 
 -- ============================ 画面 ============================
 
-local function FACE_L() return Font:getFace("cfont", 15) end
-local function FACE_V() return Font:getFace("cfont", 24) end
-local function FACE_M() return Font:getFace("cfont", 17) end
+-- 月相圆盘：白底上把"暗面"涂黑。
+-- 明暗分界是个椭圆：某一行的半宽为 w 时，分界线横坐标 xt = ±w·cos(2πp)。
+local MoonWidget = Widget:extend{ radius = nil, phase = 0 }
+
+function MoonWidget:getSize()
+    return Geom:new{ w = self.radius * 2 + 2, h = self.radius * 2 + 2 }
+end
+
+function MoonWidget:paintTo(bb, x, y)
+    local r = self.radius
+    local cx, cy = x + r + 1, y + r + 1
+    local p = self.phase
+    local c = math.cos(2 * math.pi * p)
+    local waxing = p < 0.5
+    for dy = -r, r do
+        local w = math.floor(math.sqrt(math.max(0, r * r - dy * dy)))
+        if w > 0 then
+            local xt = waxing and (w * c) or (-w * c)
+            local x0, x1
+            if waxing then x0, x1 = -w, xt        -- 盈：亮在右，暗在左
+            else x0, x1 = xt, w end               -- 亏：亮在左，暗在右
+            if x1 > x0 then
+                bb:paintRect(cx + math.floor(x0), cy + dy,
+                             math.ceil(x1 - x0), 1, Blitbuffer.COLOR_BLACK)
+            end
+        end
+    end
+    -- 描一圈边，免得满月时整个盘子消失在白底里
+    for dy = -r, r do
+        local w = math.floor(math.sqrt(math.max(0, r * r - dy * dy)))
+        if w > 0 then
+            bb:paintRect(cx - w, cy + dy, 2, 1, Blitbuffer.COLOR_BLACK)
+            bb:paintRect(cx + w - 1, cy + dy, 2, 1, Blitbuffer.COLOR_BLACK)
+        end
+    end
+end
+
+local function moonRow(usable_w)
+    local now = os.time()
+    local r = Screen:scaleBySize(34)
+    local disc = MoonWidget:new{ radius = r, phase = Moon.phase01(now) }
+
+    local next_full = Moon.nextPhase(now, 0.5)
+    local next_new  = Moon.nextPhase(now, 0)
+    local soon_full = next_full <= next_new
+    local target_ts = soon_full and next_full or next_new
+    local days = math.floor((target_ts - now) / 86400 + 0.5)
+
+    local info = VerticalGroup:new{ align = "left" }
+    table.insert(info, txt(Moon.name(now), FACE_V(), usable_w))
+    table.insert(info, VerticalSpan:new{ width = Screen:scaleBySize(6) })
+    table.insert(info, txt(string.format("月龄 %.1f 天  ·  照度 %d%%",
+        Moon.age(now), math.floor(Moon.illumination(now) * 100 + 0.5)), FACE_L(), usable_w))
+    table.insert(info, VerticalSpan:new{ width = Screen:scaleBySize(4) })
+    table.insert(info, txt(string.format("%s %s（%d 天后）",
+        soon_full and "下次满月" or "下次新月",
+        os.date("%m-%d", target_ts), days), FACE_L(), usable_w))
+
+    return HorizontalGroup:new{ align = "center",
+        disc,
+        HorizontalSpan:new{ width = Screen:scaleBySize(20) },
+        info,
+    }
+end
+
+local function FACE_L() return Font:getFace("cfont", 13) end
+local function FACE_V() return Font:getFace("cfont", 21) end
+local function FACE_M() return Font:getFace("cfont", 16) end
 local function FACE_S() return Font:getFace("cfont", 13) end
 
 local function txt(s, face, max_width)
@@ -242,7 +337,7 @@ local function cell(label, value, col_w)
     return VerticalGroup:new{
         align = "left",
         txt(label, FACE_L(), col_w),
-        VerticalSpan:new{ width = Screen:scaleBySize(2) },
+        VerticalSpan:new{ width = Screen:scaleBySize(4) },
         txt(value, FACE_V(), col_w),
     }
 end
@@ -250,10 +345,19 @@ end
 local function cellRow(items, usable_w)
     local n = #items
     local col_w = math.floor(usable_w / n)
-    local g = HorizontalGroup:new{ align = "top" }
+    local inner_w = col_w - Screen:scaleBySize(8)
+    local cells, max_h = {}, 0
     for i, it in ipairs(items) do
-        table.insert(g, cell(it[1], it[2], col_w - Screen:scaleBySize(6)))
-        if i < n then table.insert(g, HorizontalSpan:new{ width = Screen:scaleBySize(6) }) end
+        local c = cell(it[1], it[2], inner_w)
+        cells[i] = c
+        local ok, h = pcall(function() return c:getSize().h end)
+        if ok and h and h > max_h then max_h = h end
+    end
+    -- 每列包一个定宽 LeftContainer：HorizontalGroup 本身按内容宽度排，
+    -- 不定宽的话四列会各自漂移，标签和数值对不齐
+    local g = HorizontalGroup:new{ align = "top" }
+    for _, c in ipairs(cells) do
+        table.insert(g, LeftContainer:new{ dimen = Geom:new{ w = col_w, h = max_h }, c })
     end
     return g
 end
@@ -279,23 +383,57 @@ local function curveWidget(curve, usable_w)
     return g, peak
 end
 
-local function bookRows(books, usable_w)
+local function currentBook(cur, usable_w)
     local g = VerticalGroup:new{ align = "left" }
-    local peak = 1
-    for _, b in ipairs(books) do if b.sec > peak then peak = b.sec end end
-    local title_w = math.floor(usable_w * 0.52)
-    local bar_max = math.floor(usable_w * 0.33)
-    local mid = usable_w - title_w - bar_max - Screen:scaleBySize(60)
-    if mid < Screen:scaleBySize(4) then mid = Screen:scaleBySize(4) end
-    for _, b in ipairs(books) do
+    if not cur then
+        table.insert(g, txt("—", FACE_M(), usable_w))
+        return g
+    end
+    table.insert(g, txt(cur.title, FACE_M(), usable_w))
+    table.insert(g, VerticalSpan:new{ width = Screen:scaleBySize(6) })
+
+    -- 进度条
+    local bar_w = usable_w
+    local fill = math.max(2, math.floor(bar_w * math.min(cur.frac, 1)))
+    table.insert(g, HorizontalGroup:new{ align = "center",
+        rect(fill, Screen:scaleBySize(10)),
+        HorizontalSpan:new{ width = 1 },
+    })
+    table.insert(g, VerticalSpan:new{ width = Screen:scaleBySize(6) })
+
+    local line = string.format("%d%%  ·  %d / %d 页  ·  累计 %s",
+        math.floor(cur.frac * 100 + 0.5), cur.page, cur.pages, fmtHours(cur.sec))
+    table.insert(g, txt(line, FACE_L(), usable_w))
+    return g
+end
+
+-- 读完的书：按月份分组列出书名
+local function finishedRows(fin_data, usable_w, max_lines)
+    local g = VerticalGroup:new{ align = "left" }
+    if not fin_data or not fin_data.titles or #fin_data.titles == 0 then
+        table.insert(g, txt("—", FACE_M(), usable_w))
+        return g
+    end
+    local by_month = {}
+    for _, t in ipairs(fin_data.titles) do
+        by_month[t.month] = by_month[t.month] or {}
+        table.insert(by_month[t.month], t.title)
+    end
+    local months = {}
+    for m in pairs(by_month) do months[#months + 1] = m end
+    table.sort(months, function(a, b) return a > b end)
+
+    local lines = 0
+    for _, m in ipairs(months) do
+        if lines >= max_lines then break end
         local row = HorizontalGroup:new{ align = "center" }
-        table.insert(row, txt(b.title, FACE_M(), title_w))
-        table.insert(row, HorizontalSpan:new{ width = mid })
-        table.insert(row, rect(math.max(2, bar_max * b.sec / peak), Screen:scaleBySize(8)))
-        table.insert(row, HorizontalSpan:new{ width = Screen:scaleBySize(6) })
-        table.insert(row, txt(fmtHours(b.sec), FACE_M()))
+        table.insert(row, txt(m, FACE_L(), math.floor(usable_w * 0.2)))
+        table.insert(row, HorizontalSpan:new{ width = Screen:scaleBySize(10) })
+        table.insert(row, txt(table.concat(by_month[m], " · "), FACE_M(),
+            math.floor(usable_w * 0.75)))
         table.insert(g, row)
-        table.insert(g, VerticalSpan:new{ width = Screen:scaleBySize(3) })
+        table.insert(g, VerticalSpan:new{ width = Screen:scaleBySize(7) })
+        lines = lines + 1
     end
     return g
 end
@@ -314,48 +452,53 @@ local function buildWidget()
         { "今日", fmtHM(d.today) }, { "本周", fmtHM(d.week) },
         { "本月", fmtHM(d.month) }, { "今年", fmtHM(d.year) },
     }, usable))
-    table.insert(root, VerticalSpan:new{ width = Screen:scaleBySize(10) })
+    table.insert(root, VerticalSpan:new{ width = Screen:scaleBySize(16) })
     table.insert(root, hrule(usable))
-    table.insert(root, VerticalSpan:new{ width = Screen:scaleBySize(10) })
+    table.insert(root, VerticalSpan:new{ width = Screen:scaleBySize(16) })
 
     table.insert(root, cellRow({
         { "连续天数", tostring(d.streak) }, { "30天日均", fmtHM(d.avg30) },
         { "有效日均", fmtHM(d.avg_active) }, { "累计", fmtHours(d.total) },
     }, usable))
-    table.insert(root, VerticalSpan:new{ width = Screen:scaleBySize(14) })
+    table.insert(root, VerticalSpan:new{ width = Screen:scaleBySize(22) })
 
     local curve, peak = curveWidget(d.curve, usable)
     table.insert(root, txt(string.format("最近 30 天 · 共 %s · 峰值 %s",
         fmtHM(d.curve_total), fmtHM(peak)), FACE_L()))
     table.insert(root, VerticalSpan:new{ width = Screen:scaleBySize(5) })
     table.insert(root, curve)
-    table.insert(root, VerticalSpan:new{ width = Screen:scaleBySize(14) })
+    table.insert(root, VerticalSpan:new{ width = Screen:scaleBySize(22) })
     table.insert(root, hrule(usable))
-    table.insert(root, VerticalSpan:new{ width = Screen:scaleBySize(10) })
+    table.insert(root, VerticalSpan:new{ width = Screen:scaleBySize(16) })
 
-    table.insert(root, txt("各书累计时长", FACE_L()))
-    table.insert(root, VerticalSpan:new{ width = Screen:scaleBySize(5) })
-    table.insert(root, bookRows(data.books, usable))
-    table.insert(root, VerticalSpan:new{ width = Screen:scaleBySize(10) })
+    table.insert(root, txt("当前在读", FACE_L()))
+    table.insert(root, VerticalSpan:new{ width = Screen:scaleBySize(6) })
+    table.insert(root, currentBook(data.current, usable))
+    table.insert(root, VerticalSpan:new{ width = Screen:scaleBySize(16) })
     table.insert(root, hrule(usable))
-    table.insert(root, VerticalSpan:new{ width = Screen:scaleBySize(10) })
+    table.insert(root, VerticalSpan:new{ width = Screen:scaleBySize(16) })
 
-    local fin = {}
-    local fin_data = getFinished(false)
-    if fin_data then
-        for _, f in ipairs(Finished.recentMonths(fin_data, CFG.finished_months)) do
-            fin[#fin + 1] = string.format("%s  %d", f.month:sub(6), f.n)
-        end
-    end
-    table.insert(root, txt("每月读完", FACE_L()))
-    table.insert(root, VerticalSpan:new{ width = Screen:scaleBySize(4) })
-    table.insert(root, txt(#fin > 0 and table.concat(fin, "   ") or "—", FACE_M(), usable))
+    table.insert(root, txt("月相", FACE_L()))
+    table.insert(root, VerticalSpan:new{ width = Screen:scaleBySize(10) })
+    table.insert(root, moonRow(usable))
 
     table.insert(root, VerticalSpan:new{ width = Screen:scaleBySize(12) })
     local batt = ""
     local ok_p, pd = pcall(function() return Device:getPowerDevice() end)
     if ok_p and pd then batt = string.format("  ·  %d%%", pd:getCapacity()) end
     table.insert(root, txt(os.date("%Y-%m-%d %H:%M") .. batt, FACE_S()))
+
+    -- 把内容补到整屏高，否则外层会按内容高度居中，屏幕上下会露出底层画面
+    local ok_h, ch = pcall(function() return root:getSize().h end)
+    if ok_h and ch then
+        local rest = H - pad * 2 - ch
+        if rest > 0 then
+            table.insert(root, VerticalSpan:new{ width = rest })
+            -- getSize() 会把 _offsets 缓存住；插完新元素必须清掉，
+            -- 否则 paintTo 时 self._offsets[i] 为 nil，直接崩（verticalgroup.lua:51）
+            root:resetLayout()
+        end
+    end
 
     return CenterContainer:new{
         dimen = Screen:getSize(),
@@ -374,7 +517,9 @@ local Preview = InputContainer:extend{}
 
 function Preview:init()
     self.dimen = Screen:getSize()
-    self[1] = buildWidget() or CenterContainer:new{
+    local ok_b, w = pcall(buildWidget)
+    if not ok_b then logger.warn("densestats: preview build failed:", w); w = nil end
+    self[1] = w or CenterContainer:new{
         dimen = Screen:getSize(),
         TextWidget:new{ text = "densestats: 构建失败，看 crash.log", face = FACE_M() },
     }
@@ -409,6 +554,8 @@ function DenseStats:init()
     --     widget = self.ui.statistics:onShowReaderProgress(true)
     -- 所以包 ReaderStatistics 的实例方法：get_widget 为真（屏保调用）时返回我们的
     -- widget；为假（菜单调用）时原样走官方逻辑。
+    self:_maybeAutoShow()
+
     local stats = self.ui and self.ui.statistics
     if not stats then return end
     if rawget(stats, "_densestats_wrapped") then return end
@@ -423,6 +570,24 @@ function DenseStats:init()
         end
         return orig(this, get_widget)
     end
+end
+
+-- 调试用：设 DENSESTATS_AUTOSHOW=1 启动时自动弹出预览，方便截图。
+function DenseStats:onReaderReady()
+    self:_maybeAutoShow()
+end
+
+function DenseStats:onFileManagerReady()
+    self:_maybeAutoShow()
+end
+
+function DenseStats:_maybeAutoShow()
+    if os.getenv("DENSESTATS_AUTOSHOW") ~= "1" then return end
+    if DenseStats._autoshown then return end
+    DenseStats._autoshown = true
+    UIManager:scheduleIn(2.5, function()
+        UIManager:show(Preview:new{})
+    end)
 end
 
 function DenseStats:addToMainMenu(menu_items)
