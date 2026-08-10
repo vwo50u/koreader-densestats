@@ -33,7 +33,7 @@ return {
     },
     ["cre_dom_version"] = 20240114,
     ["css"] = "./data/epub.css",
-    ["doc_pages"] = 8,
+    ["doc_pages"] = 10,
     ["doc_path"] = "/Users/a186r/dev/koreader-densestats/.testdata/help/quickstart-en-v2026.07.2-57-g8faf6b8_2026-08-10_macos.html",
     ["doc_props"] = {
         ["title"] = "KOReader Quickstart Guide",
@@ -58,7 +58,7 @@ return {
     ["page_overlap_style"] = "dim",
     ["partial_md5_checksum"] = "78845475a06b636e873246c89541591d",
     ["partial_rerendering"] = true,
-    ["percent_finished"] = 1,
+    ["percent_finished"] = 0.9,
     ["readermenu_tab_index"] = 1,
     ["show_overlap_enable"] = false,
     ["stats"] = {
@@ -66,7 +66,7 @@ return {
         ["highlights"] = 0,
         ["language"] = "N/A",
         ["notes"] = 0,
-        ["pages"] = 8,
+        ["pages"] = 10,
         ["performance_in_pages"] = {},
         ["series"] = "N/A",
         ["title"] = "KOReader Quickstart Guide",

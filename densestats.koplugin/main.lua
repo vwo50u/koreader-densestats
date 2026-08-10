@@ -54,6 +54,7 @@ local CFG = {
     curve_days = 30,
     window_days = 400,   -- 逐日明细只查这个窗口；累计另走 book 表汇总
     finished_cache_hours = 12,  -- sidecar 扫描结果缓存时长
+    cache_titles = 60,          -- 缓存里最多保留多少本书名（渲染时要整份解析）
     tz_offset = 0,              -- start_time 与设备墙钟一致，真机上为 0；设 nil 则自动推断
 }
 -- =================================================================
@@ -101,7 +102,9 @@ local function collect()
     local sql_days = string.format([[
         SELECT date(start_time + %d, 'unixepoch')      AS d,
                SUM(MIN(duration, %d))                  AS s,
-               COUNT(DISTINCT id_book * 1000000 + page) AS n
+               -- 乘数要大于任何可能的页码；SQLite 是 64 位整数，
+               -- 就算 id 到十亿、页码到百万也不会溢出，不同书之间也不会撞车。
+               COUNT(DISTINCT id_book * 10000000 + page) AS n
         FROM page_stat_data
         WHERE start_time >= %d
         GROUP BY d;
@@ -180,8 +183,18 @@ local function saveCache(summary)
     for m, n in pairs(summary.months) do
         f:write(string.format("    [%q] = %d,\n", m, n))
     end
+    -- 只写最近 CFG.cache_titles 本：屏幕上最多也就显示十几行，
+    -- 但这个文件每次渲染都要 dofile 解析一遍，无上限增长会把成本压到入睡路径上。
+    -- 总数 total 仍然是全量，标题栏的"共 N 本"不受影响。
+    local titles = summary.titles or {}
+    local sorted = {}
+    for _, t in ipairs(titles) do sorted[#sorted + 1] = t end
+    table.sort(sorted, function(a, b)
+        return (a.date or a.month or "") > (b.date or b.month or "")
+    end)
     f:write("  },\n  titles = {\n")
-    for _, t in ipairs(summary.titles or {}) do
+    for i = 1, math.min(#sorted, CFG.cache_titles) do
+        local t = sorted[i]
         f:write(string.format("    { title = %q, month = %q, date = %q },\n",
             t.title, t.month, t.date or ""))
     end
@@ -225,6 +238,7 @@ local function rescanFinished()
 end
 
 local rescan_scheduled = false
+local rescan_task              -- 存下来才能 unschedule
 local function maybeRescanLater()
     if rescan_scheduled then return end   -- ReaderUI 与 FileManager 各有一个插件实例
     local cache = loadCache()
@@ -233,10 +247,11 @@ local function maybeRescanLater()
     -- 有旧缓存就慢慢来（20 秒后），别和开书抢时间；
     -- 一次都没扫过就尽快扫，否则首次安装后的头一屏"已读完"永远是空的
     local delay = cache and 20 or 1
-    UIManager:scheduleIn(delay, function()
+    rescan_task = function()
         rescan_scheduled = false
         rescanFinished()
-    end)
+    end
+    UIManager:scheduleIn(delay, rescan_task)
 end
 
 -- ============================ 算数 ============================
@@ -606,6 +621,9 @@ function DenseStats:_hookStatistics()
     local orig = stats.onShowReaderProgress
     stats.onShowReaderProgress = function(this, get_widget)
         if get_widget then
+            -- 原版这里第一件事就是 insertDB()，把本次阅读还在内存里的记录落盘。
+            -- 绕过它的话，屏保上的"今日"会少算当前这一段。
+            pcall(function() this:insertDB() end)
             local ok, w = pcall(buildWidget)
             if ok and w then return w end
             logger.warn("densestats: build failed:", w)
@@ -614,6 +632,15 @@ function DenseStats:_hookStatistics()
     end
     logger.info("densestats: 睡眠屏幕接管已挂载")
     return true
+end
+
+-- 入睡时撤掉还没执行的扫描任务。UIManager 有待办任务时会推迟进入待机，
+-- 让一个纯粹的后台活儿拖住待机是白费电；下次开书会重新排。
+function DenseStats:onSuspend()
+    if rescan_scheduled then
+        UIManager:unschedule(rescan_task)
+        rescan_scheduled = false
+    end
 end
 
 -- 调试用：设 DENSESTATS_AUTOSHOW=1 启动时自动弹出预览，方便截图。
