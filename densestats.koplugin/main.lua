@@ -481,7 +481,9 @@ local function buildWidget()
 
     -- 左右留白按屏幕宽度取比例。原来用 scaleBySize(16)，在 300 DPI 的设备上
     -- 只有 4% 宽，贴边很难看；原生那套观感更宽松，这里取 6%（并给个下限）。
-    local pad = math.max(Screen:scaleBySize(12), math.floor(Screen:getWidth() * 0.06))
+    -- 下限用 KOReader 的 Size.padding.fullscreen（原生屏保就是这个值，约屏宽 3.7%），
+    -- 正常情况取屏宽 6%，比原生宽一些。
+    local pad = math.max(Size.padding.fullscreen, math.floor(Screen:getWidth() * 0.06))
     local W, H = Screen:getWidth(), Screen:getHeight()
     local usable = W - pad * 2
     local root = VerticalGroup:new{ align = "left" }
