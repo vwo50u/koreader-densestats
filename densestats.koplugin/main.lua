@@ -261,9 +261,9 @@ local function hrule(w)
     }
 end
 
-local function cell(label, value, col_w, extra, align)
+local function cell(label, value, col_w, extra)
     local g = VerticalGroup:new{
-        align = align or "left",
+        align = "left",
         txt(label, FACE_L(), col_w),
         VerticalSpan:new{ width = Screen:scaleBySize(4) },
         txt(value, FACE_V(), col_w),
@@ -281,7 +281,7 @@ local function cellRow(items, usable_w)
     local inner_w = col_w - Screen:scaleBySize(8)
     local cells, max_h = {}, 0
     for i, it in ipairs(items) do
-        local c = cell(it[1], it[2], inner_w, it[3], it[4])
+        local c = cell(it[1], it[2], inner_w, it[3])
         cells[i] = c
         local ok, h = pcall(function() return c:getSize().h end)
         if ok and h and h > max_h then max_h = h end
@@ -289,11 +289,8 @@ local function cellRow(items, usable_w)
     -- 每列包一个定宽 LeftContainer：HorizontalGroup 本身按内容宽度排，
     -- 不定宽的话四列会各自漂移，标签和数值对不齐
     local g = HorizontalGroup:new{ align = "top" }
-    for i, c in ipairs(cells) do
-        local box = (items[i][4] == "center")
-            and CenterContainer:new{ dimen = Geom:new{ w = col_w, h = max_h }, c }
-            or  LeftContainer:new{ dimen = Geom:new{ w = col_w, h = max_h }, c }
-        table.insert(g, box)
+    for _, c in ipairs(cells) do
+        table.insert(g, LeftContainer:new{ dimen = Geom:new{ w = col_w, h = max_h }, c })
     end
     return g
 end
@@ -491,7 +488,7 @@ local function buildWidget()
         { "连续天数", tostring(d.streak) },
         { "有效日均", fmtHM(d.avg_active) },
         { "累计", fmtHours(d.total) },
-        { "今日页数", tostring(d.pages_today), string.format("本周 %d 页", d.pages_week), "center" },
+        { "今日页数", tostring(d.pages_today), string.format("本周 %d 页", d.pages_week) },
     }, usable))
     table.insert(root, VerticalSpan:new{ width = Screen:scaleBySize(22) })
 
