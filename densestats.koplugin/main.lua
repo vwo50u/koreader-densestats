@@ -496,7 +496,7 @@ local function buildWidget()
     table.insert(root, VerticalSpan:new{ width = Screen:scaleBySize(22) })
 
     local curve, peak = curveWidget(d.curve, usable)
-    table.insert(root, txt(string.format("最近 30 天 · 共 %s · 峰值 %s · 虚线 1h",
+    table.insert(root, txt(string.format("最近 30 天 · 共 %s · 峰值 %s",
         fmtHM(d.curve_total), fmtHM(peak)), FACE_L()))
     table.insert(root, VerticalSpan:new{ width = Screen:scaleBySize(5) })
     table.insert(root, centered(usable, curve))
