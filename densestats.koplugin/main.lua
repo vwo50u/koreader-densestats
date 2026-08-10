@@ -304,9 +304,9 @@ local function hrule(w)
     }
 end
 
-local function cell(label, value, col_w, extra)
+local function cell(label, value, col_w, extra, align)
     local g = VerticalGroup:new{
-        align = "left",
+        align = align or "left",
         txt(label, FACE_L(), col_w),
         VerticalSpan:new{ width = Screen:scaleBySize(4) },
         txt(value, FACE_V(), col_w),
@@ -324,7 +324,7 @@ local function cellRow(items, usable_w)
     local inner_w = col_w - Screen:scaleBySize(8)
     local cells, max_h = {}, 0
     for i, it in ipairs(items) do
-        local c = cell(it[1], it[2], inner_w, it[3])
+        local c = cell(it[1], it[2], inner_w, it[3], it[4])
         cells[i] = c
         local ok, h = pcall(function() return c:getSize().h end)
         if ok and h and h > max_h then max_h = h end
@@ -332,8 +332,11 @@ local function cellRow(items, usable_w)
     -- 每列包一个定宽 LeftContainer：HorizontalGroup 本身按内容宽度排，
     -- 不定宽的话四列会各自漂移，标签和数值对不齐
     local g = HorizontalGroup:new{ align = "top" }
-    for _, c in ipairs(cells) do
-        table.insert(g, LeftContainer:new{ dimen = Geom:new{ w = col_w, h = max_h }, c })
+    for i, c in ipairs(cells) do
+        local box = (items[i][4] == "center")
+            and CenterContainer:new{ dimen = Geom:new{ w = col_w, h = max_h }, c }
+            or  LeftContainer:new{ dimen = Geom:new{ w = col_w, h = max_h }, c }
+        table.insert(g, box)
     end
     return g
 end
@@ -342,6 +345,9 @@ local function curveWidget(curve, usable_w)
     local n = #curve
     local gap = Screen:scaleBySize(1)
     local bar_w = math.max(2, math.floor((usable_w - gap * (n - 1)) / n))
+    -- 30 根柱子除不尽会剩几个像素，居中只会让两边各留一条缝；
+    -- 把余数摊回前几根柱子，整条曲线就和分隔线严丝合缝一样宽。
+    local leftover = usable_w - (bar_w * n + gap * (n - 1))
     local max_h = Screen:scaleBySize(70)
     local peak = 1
     for _, v in ipairs(curve) do if v > peak then peak = v end end
@@ -349,10 +355,11 @@ local function curveWidget(curve, usable_w)
     local g = HorizontalGroup:new{ align = "bottom" }
     for i, v in ipairs(curve) do
         local h = math.max(1, math.floor(max_h * v / peak))
+        local w = bar_w + (i <= leftover and 1 or 0)
         table.insert(g, VerticalGroup:new{
             align = "center",
             VerticalSpan:new{ width = max_h - h },
-            rect(bar_w, h),
+            rect(w, h),
         })
         if i < n then table.insert(g, HorizontalSpan:new{ width = gap }) end
     end
@@ -538,7 +545,7 @@ local function buildWidget()
         { "连续天数", tostring(d.streak) },
         { "有效日均", fmtHM(d.avg_active) },
         { "累计", fmtHours(d.total) },
-        { "今日页数", tostring(d.pages_today), string.format("本周 %d 页", d.pages_week) },
+        { "今日页数", tostring(d.pages_today), string.format("本周 %d 页", d.pages_week), "center" },
     }, usable))
     table.insert(root, VerticalSpan:new{ width = Screen:scaleBySize(22) })
 
@@ -557,6 +564,13 @@ local function buildWidget()
     table.insert(root, VerticalSpan:new{ width = Screen:scaleBySize(16) })
     table.insert(root, centered(usable, hrule(usable)))
     table.insert(root, VerticalSpan:new{ width = Screen:scaleBySize(16) })
+
+    if os.getenv("DENSESTATS_DEBUG") == "1" then
+        local function wof(w) local ok, sz = pcall(function() return w:getSize() end)
+            return (ok and sz and sz.w) or -1 end
+        logger.info(string.format("densestats widths: screen=%d pad=%d usable=%d curve=%d hrule=%d root=%d",
+            W, pad, usable, wof(curve), wof(hrule(usable)), wof(root)))
+    end
 
     -- 已读完：先量此刻用掉多少高度，剩下的（扣掉页脚）全给它，装不下就截断
     local fin_data = getFinished()
