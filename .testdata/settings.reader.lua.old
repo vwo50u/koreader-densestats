@@ -5,6 +5,8 @@ return {
     ["autoturn_timeout_seconds"] = 0,
     ["autowarmth_fl_off_during_day_offset_s"] = 0,
     ["autowarmth_timezone"] = 0,
+    ["back_in_filemanager"] = "default",
+    ["back_to_exit"] = "prompt",
     ["bookmarks_items_per_page"] = 14,
     ["bookmarks_items_text_type"] = "note",
     ["clipboard"] = {},

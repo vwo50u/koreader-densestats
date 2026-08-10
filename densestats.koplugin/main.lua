@@ -114,6 +114,19 @@ local function collect()
     data.by_day = by_day
     data.day_list = day_list
 
+    -- 每日页数：同一页反复停留只算一次，与 KOReader 自己的统计口径基本一致（±1 页）
+    local sql_pages = string.format([[
+        SELECT date(start_time + %d, 'unixepoch') AS d,
+               COUNT(DISTINCT id_book || '-' || page) AS n
+        FROM page_stat_data
+        GROUP BY d;
+    ]], off)
+    local pages_by_day = {}
+    for _, r in ipairs(rowsOf(conn:exec(sql_pages), 2)) do
+        pages_by_day[tostring(r[1])] = tonumber(r[2]) or 0
+    end
+    data.pages_by_day = pages_by_day
+
     -- 当前在读 = 最近一次有阅读记录的那本
     local sql_cur = string.format([[
         SELECT b.title,
@@ -182,18 +195,26 @@ local function scanRoots()
     return roots
 end
 
-local function getFinished(force)
-    local cache = loadCache()
-    if not force and cache and (os.time() - (cache.ts or 0)) < CFG.finished_cache_hours * 3600 then
-        return cache
-    end
+-- 只读缓存。渲染发生在入睡路径上，绝不能在这里遍历书库。
+local function getFinished()
+    return loadCache()
+end
+
+-- 真正的扫描：只在开书之后延迟触发，或菜单里手动触发。
+local function rescanFinished()
     local ok, summary = pcall(Finished.summarize, scanRoots(), lfs)
     if not ok then
         logger.warn("densestats: sidecar scan failed:", summary)
-        return cache
+        return nil
     end
     saveCache(summary)
     return summary
+end
+
+local function maybeRescanLater()
+    local cache = loadCache()
+    if cache and (os.time() - (cache.ts or 0)) < CFG.finished_cache_hours * 3600 then return end
+    UIManager:scheduleIn(20, function() rescanFinished() end)  -- 别和开书抢时间
 end
 
 -- ============================ 算数 ============================
@@ -216,6 +237,12 @@ local function derive(data)
         if day >= week_key and day <= today_key then d.week = d.week + s end
         if day:sub(1, 7) == month_key then d.month = d.month + s end
         if day:sub(1, 4) == year_key then d.year = d.year + s end
+    end
+
+    d.pages_today, d.pages_week = 0, 0
+    for day, n in pairs(data.pages_by_day or {}) do
+        if day == today_key then d.pages_today = d.pages_today + n end
+        if day >= week_key and day <= today_key then d.pages_week = d.pages_week + n end
     end
 
     d.curve, d.curve_total = {}, 0
@@ -245,71 +272,6 @@ end
 
 -- ============================ 画面 ============================
 
--- 月相圆盘：白底上把"暗面"涂黑。
--- 明暗分界是个椭圆：某一行的半宽为 w 时，分界线横坐标 xt = ±w·cos(2πp)。
-local MoonWidget = Widget:extend{ radius = nil, phase = 0 }
-
-function MoonWidget:getSize()
-    return Geom:new{ w = self.radius * 2 + 2, h = self.radius * 2 + 2 }
-end
-
-function MoonWidget:paintTo(bb, x, y)
-    local r = self.radius
-    local cx, cy = x + r + 1, y + r + 1
-    local p = self.phase
-    local c = math.cos(2 * math.pi * p)
-    local waxing = p < 0.5
-    for dy = -r, r do
-        local w = math.floor(math.sqrt(math.max(0, r * r - dy * dy)))
-        if w > 0 then
-            local xt = waxing and (w * c) or (-w * c)
-            local x0, x1
-            if waxing then x0, x1 = -w, xt        -- 盈：亮在右，暗在左
-            else x0, x1 = xt, w end               -- 亏：亮在左，暗在右
-            if x1 > x0 then
-                bb:paintRect(cx + math.floor(x0), cy + dy,
-                             math.ceil(x1 - x0), 1, Blitbuffer.COLOR_BLACK)
-            end
-        end
-    end
-    -- 描一圈边，免得满月时整个盘子消失在白底里
-    for dy = -r, r do
-        local w = math.floor(math.sqrt(math.max(0, r * r - dy * dy)))
-        if w > 0 then
-            bb:paintRect(cx - w, cy + dy, 2, 1, Blitbuffer.COLOR_BLACK)
-            bb:paintRect(cx + w - 1, cy + dy, 2, 1, Blitbuffer.COLOR_BLACK)
-        end
-    end
-end
-
-local function moonRow(usable_w)
-    local now = os.time()
-    local r = Screen:scaleBySize(34)
-    local disc = MoonWidget:new{ radius = r, phase = Moon.phase01(now) }
-
-    local next_full = Moon.nextPhase(now, 0.5)
-    local next_new  = Moon.nextPhase(now, 0)
-    local soon_full = next_full <= next_new
-    local target_ts = soon_full and next_full or next_new
-    local days = math.floor((target_ts - now) / 86400 + 0.5)
-
-    local info = VerticalGroup:new{ align = "left" }
-    table.insert(info, txt(Moon.name(now), FACE_V(), usable_w))
-    table.insert(info, VerticalSpan:new{ width = Screen:scaleBySize(6) })
-    table.insert(info, txt(string.format("月龄 %.1f 天  ·  照度 %d%%",
-        Moon.age(now), math.floor(Moon.illumination(now) * 100 + 0.5)), FACE_L(), usable_w))
-    table.insert(info, VerticalSpan:new{ width = Screen:scaleBySize(4) })
-    table.insert(info, txt(string.format("%s %s（%d 天后）",
-        soon_full and "下次满月" or "下次新月",
-        os.date("%m-%d", target_ts), days), FACE_L(), usable_w))
-
-    return HorizontalGroup:new{ align = "center",
-        disc,
-        HorizontalSpan:new{ width = Screen:scaleBySize(20) },
-        info,
-    }
-end
-
 local function FACE_L() return Font:getFace("cfont", 13) end
 local function FACE_V() return Font:getFace("cfont", 21) end
 local function FACE_M() return Font:getFace("cfont", 16) end
@@ -323,6 +285,15 @@ local function rect(w, h)
     return LineWidget:new{
         background = Blitbuffer.COLOR_BLACK,
         dimen = Geom:new{ w = math.max(1, math.floor(w)), h = math.max(1, math.floor(h)) },
+    }
+end
+
+-- 占满宽度的元素统一居中：HorizontalGroup 里的取整余数会让它们偏左几个像素
+local function centered(w, widget)
+    local ok, sz = pcall(function() return widget:getSize() end)
+    return CenterContainer:new{
+        dimen = Geom:new{ w = w, h = (ok and sz and sz.h) or 0 },
+        widget,
     }
 end
 
@@ -407,8 +378,57 @@ local function currentBook(cur, usable_w)
     return g
 end
 
--- 读完的书：按月份分组列出书名
-local function finishedRows(fin_data, usable_w, max_lines)
+-- 读完的书：月份一行，书名缩进各占一行；按给定的高度预算往里填，填不下就截断。
+-- 长期看月份只增不减，所以必须是"能放几行放几行"，不能固定条数。
+local function finishedRows(fin_data, usable_w, budget_h)
+    local g = VerticalGroup:new{ align = "left" }
+    if not fin_data or not fin_data.titles or #fin_data.titles == 0 then
+        table.insert(g, txt("—", FACE_M(), usable_w))
+        return g
+    end
+    local by_month = {}
+    for _, t in ipairs(fin_data.titles) do
+        by_month[t.month] = by_month[t.month] or {}
+        table.insert(by_month[t.month], t.title)
+    end
+    local months = {}
+    for m in pairs(by_month) do months[#months + 1] = m end
+    table.sort(months, function(a, b) return a > b end)
+
+    local indent = Screen:scaleBySize(24)
+    local line_gap = Screen:scaleBySize(6)
+    local used, shown, total = 0, 0, #fin_data.titles
+
+    local function fits(h) return used + h <= budget_h end
+    local function push(w, h)
+        table.insert(g, w)
+        table.insert(g, VerticalSpan:new{ width = line_gap })
+        used = used + h + line_gap
+    end
+
+    for _, m in ipairs(months) do
+        local mw = txt(m, FACE_L(), usable_w)
+        local mh = mw:getSize().h
+        if not fits(mh) then break end
+        push(mw, mh)
+        for _, title in ipairs(by_month[m]) do
+            local tw = txt(title, FACE_M(), usable_w - indent)
+            local th = tw:getSize().h
+            local row = HorizontalGroup:new{ align = "center",
+                HorizontalSpan:new{ width = indent }, tw }
+            if not fits(th) then break end
+            push(row, th)
+            shown = shown + 1
+        end
+    end
+    if shown < total then
+        local more = txt(string.format("…更早还有 %d 本", total - shown), FACE_S(), usable_w)
+        if fits(more:getSize().h) then push(more, more:getSize().h) end
+    end
+    return g
+end
+
+local function _unused_finishedRows(fin_data, usable_w, max_lines)
     local g = VerticalGroup:new{ align = "left" }
     if not fin_data or not fin_data.titles or #fin_data.titles == 0 then
         table.insert(g, txt("—", FACE_M(), usable_w))
@@ -438,6 +458,59 @@ local function finishedRows(fin_data, usable_w, max_lines)
     return g
 end
 
+-- 月相圆盘：白底上把"暗面"涂黑。
+-- 明暗分界是个椭圆：某一行的半宽为 w 时，分界线横坐标 xt = ±w·cos(2πp)。
+local MoonWidget = Widget:extend{ radius = nil, phase = 0 }
+
+function MoonWidget:getSize()
+    return Geom:new{ w = self.radius * 2 + 2, h = self.radius * 2 + 2 }
+end
+
+function MoonWidget:paintTo(bb, x, y)
+    local r = self.radius
+    local cx, cy = x + r + 1, y + r + 1
+    local p = self.phase
+    local c = math.cos(2 * math.pi * p)
+    local waxing = p < 0.5
+    for dy = -r, r do
+        local w = math.floor(math.sqrt(math.max(0, r * r - dy * dy)))
+        if w > 0 then
+            local xt = waxing and (w * c) or (-w * c)
+            local x0, x1
+            if waxing then x0, x1 = -w, xt        -- 盈：亮在右，暗在左
+            else x0, x1 = xt, w end               -- 亏：亮在左，暗在右
+            if x1 > x0 then
+                bb:paintRect(cx + math.floor(x0), cy + dy,
+                             math.ceil(x1 - x0), 1, Blitbuffer.COLOR_BLACK)
+            end
+        end
+    end
+    -- 描一圈边，免得满月时整个盘子消失在白底里
+    for dy = -r, r do
+        local w = math.floor(math.sqrt(math.max(0, r * r - dy * dy)))
+        if w > 0 then
+            bb:paintRect(cx - w, cy + dy, 2, 1, Blitbuffer.COLOR_BLACK)
+            bb:paintRect(cx + w - 1, cy + dy, 2, 1, Blitbuffer.COLOR_BLACK)
+        end
+    end
+end
+
+-- 页脚：日期 · 电量 · 月相（小图 + 相名 + 月龄）
+local function footerRow(usable_w)
+    local now = os.time()
+    local batt = ""
+    local ok_p, pd = pcall(function() return Device:getPowerDevice() end)
+    if ok_p and pd then batt = string.format("  ·  %d%%", pd:getCapacity()) end
+
+    local g = HorizontalGroup:new{ align = "center" }
+    table.insert(g, txt(os.date("%Y-%m-%d %H:%M") .. batt, FACE_S()))
+    table.insert(g, HorizontalSpan:new{ width = Screen:scaleBySize(14) })
+    table.insert(g, MoonWidget:new{ radius = Screen:scaleBySize(9), phase = Moon.phase01(now) })
+    table.insert(g, HorizontalSpan:new{ width = Screen:scaleBySize(6) })
+    table.insert(g, txt(string.format("%s · 月龄 %.1f", Moon.name(now), Moon.age(now)), FACE_S()))
+    return g
+end
+
 local function buildWidget()
     local data = collect()
     if not data then return nil end
@@ -457,36 +530,51 @@ local function buildWidget()
     table.insert(root, VerticalSpan:new{ width = Screen:scaleBySize(16) })
 
     table.insert(root, cellRow({
-        { "连续天数", tostring(d.streak) }, { "30天日均", fmtHM(d.avg30) },
-        { "有效日均", fmtHM(d.avg_active) }, { "累计", fmtHours(d.total) },
+        { "连续天数", tostring(d.streak) },
+        { "有效日均", fmtHM(d.avg_active) },
+        { "累计", fmtHours(d.total) },
     }, usable))
+    table.insert(root, VerticalSpan:new{ width = Screen:scaleBySize(12) })
+    table.insert(root, txt(string.format("今日 %d 页  ·  本周 %d 页",
+        d.pages_today, d.pages_week), FACE_L(), usable))
     table.insert(root, VerticalSpan:new{ width = Screen:scaleBySize(22) })
 
     local curve, peak = curveWidget(d.curve, usable)
     table.insert(root, txt(string.format("最近 30 天 · 共 %s · 峰值 %s",
         fmtHM(d.curve_total), fmtHM(peak)), FACE_L()))
     table.insert(root, VerticalSpan:new{ width = Screen:scaleBySize(5) })
-    table.insert(root, curve)
+    table.insert(root, centered(usable, curve))
     table.insert(root, VerticalSpan:new{ width = Screen:scaleBySize(22) })
-    table.insert(root, hrule(usable))
+    table.insert(root, centered(usable, hrule(usable)))
     table.insert(root, VerticalSpan:new{ width = Screen:scaleBySize(16) })
 
     table.insert(root, txt("当前在读", FACE_L()))
     table.insert(root, VerticalSpan:new{ width = Screen:scaleBySize(6) })
     table.insert(root, currentBook(data.current, usable))
     table.insert(root, VerticalSpan:new{ width = Screen:scaleBySize(16) })
-    table.insert(root, hrule(usable))
+    table.insert(root, centered(usable, hrule(usable)))
     table.insert(root, VerticalSpan:new{ width = Screen:scaleBySize(16) })
 
-    table.insert(root, txt("月相", FACE_L()))
-    table.insert(root, VerticalSpan:new{ width = Screen:scaleBySize(10) })
-    table.insert(root, moonRow(usable))
+    -- 已读完：先量此刻用掉多少高度，剩下的（扣掉页脚）全给它，装不下就截断
+    local fin_data = getFinished()
+    local fin_title = "已读完"
+    if fin_data and fin_data.total then
+        fin_title = string.format("已读完 · 共 %d 本", fin_data.total)
+    end
+    table.insert(root, txt(fin_title, FACE_L()))
+    table.insert(root, VerticalSpan:new{ width = Screen:scaleBySize(8) })
+
+    local footer = footerRow(usable)
+    local ok_f, fh = pcall(function() return footer:getSize().h end)
+    local footer_h = (ok_f and fh) or Screen:scaleBySize(30)
+    root:resetLayout()
+    local used_h = root:getSize().h
+    local budget = H - pad * 2 - used_h - footer_h - Screen:scaleBySize(24)
+    table.insert(root, finishedRows(fin_data, usable, math.max(0, budget)))
 
     table.insert(root, VerticalSpan:new{ width = Screen:scaleBySize(12) })
-    local batt = ""
-    local ok_p, pd = pcall(function() return Device:getPowerDevice() end)
-    if ok_p and pd then batt = string.format("  ·  %d%%", pd:getCapacity()) end
-    table.insert(root, txt(os.date("%Y-%m-%d %H:%M") .. batt, FACE_S()))
+    table.insert(root, footer)
+    root:resetLayout()
 
     -- 把内容补到整屏高，否则外层会按内容高度居中，屏幕上下会露出底层画面
     local ok_h, ch = pcall(function() return root:getSize().h end)
@@ -555,6 +643,7 @@ function DenseStats:init()
     -- 所以包 ReaderStatistics 的实例方法：get_widget 为真（屏保调用）时返回我们的
     -- widget；为假（菜单调用）时原样走官方逻辑。
     self:_maybeAutoShow()
+    maybeRescanLater()
 
     local stats = self.ui and self.ui.statistics
     if not stats then return end
@@ -575,10 +664,12 @@ end
 -- 调试用：设 DENSESTATS_AUTOSHOW=1 启动时自动弹出预览，方便截图。
 function DenseStats:onReaderReady()
     self:_maybeAutoShow()
+    maybeRescanLater()
 end
 
 function DenseStats:onFileManagerReady()
     self:_maybeAutoShow()
+    maybeRescanLater()
 end
 
 function DenseStats:_maybeAutoShow()
@@ -595,7 +686,7 @@ function DenseStats:addToMainMenu(menu_items)
         text = "重新扫描已读完书籍",
         sorting_hint = "more_tools",
         callback = function()
-            local r = getFinished(true)
+            local r = rescanFinished()
             UIManager:show(require("ui/widget/infomessage"):new{
                 text = r and string.format("已读完 %d 本", r.total) or "扫描失败",
             })
