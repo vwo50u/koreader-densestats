@@ -150,9 +150,9 @@ return {
     ["scroll_method"] = "classic",
     ["sdl_window"] = {
         ["height"] = 842,
-        ["left"] = 679,
+        ["left"] = 703,
         ["top"] = 58,
-        ["width"] = 758,
+        ["width"] = 734,
     },
     ["show_filter"] = {},
     ["statistics"] = {

@@ -431,7 +431,11 @@ local function finishedRows(fin_data, usable_w, budget_h)
 
     local items = Stats.groupFinished(list)
 
-    local date_w = Screen:scaleBySize(72)
+    -- 日期列宽按真实文字宽度量，写死的话字号一变就会被截成 "2026-..."
+    local probe = txt("2026-08", FACE_M())
+    local ok_p, psz = pcall(function() return probe:getSize() end)
+    local date_w = ((ok_p and psz and psz.w) or Screen:scaleBySize(80))
+                   + Screen:scaleBySize(6)
     local gap_w = Screen:scaleBySize(14)
     local line_gap = Screen:scaleBySize(7)
     local used, shown = 0, 0
@@ -470,7 +474,9 @@ local function buildWidget()
     if not data then return nil end
     local d = Stats.derive(data, os.time(), CFG)
 
-    local pad = Screen:scaleBySize(16)
+    -- 左右留白按屏幕宽度取比例。原来用 scaleBySize(16)，在 300 DPI 的设备上
+    -- 只有 4% 宽，贴边很难看；原生那套观感更宽松，这里取 6%（并给个下限）。
+    local pad = math.max(Screen:scaleBySize(12), math.floor(Screen:getWidth() * 0.06))
     local W, H = Screen:getWidth(), Screen:getHeight()
     local usable = W - pad * 2
     local root = VerticalGroup:new{ align = "left" }
