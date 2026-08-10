@@ -27,6 +27,14 @@ ok(s.months["2026-08"] == 2, "2026-08 两本", s.months["2026-08"])
 ok(s.months["2026-07"] == 1, "2026-07 一本", s.months["2026-07"])
 ok(s.months["2026-10"] == nil, "没有凭空冒出来的月份")
 
+print("== 完整日期 ==")
+local with_date = 0
+for _, t in ipairs(s.titles) do
+    if t.date and t.date:match("^%d%d%d%d%-%d%d%-%d%d$") then with_date = with_date + 1 end
+end
+ok(with_date == 3, "每本都带完整日期", with_date)
+ok(s.titles[1].month == s.titles[1].date:sub(1,7), "月份是日期的前缀")
+
 print("== recentMonths ==")
 local r = F.recentMonths(s, 6)
 ok(#r == 2, "两个月份", #r)

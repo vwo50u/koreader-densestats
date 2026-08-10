@@ -173,7 +173,8 @@ local function saveCache(summary)
     end
     f:write("  },\n  titles = {\n")
     for _, t in ipairs(summary.titles or {}) do
-        f:write(string.format("    { title = %q, month = %q },\n", t.title, t.month))
+        f:write(string.format("    { title = %q, month = %q, date = %q },\n",
+            t.title, t.month, t.date or ""))
     end
     f:write("  },\n}\n")
     f:close()
@@ -363,52 +364,47 @@ local function currentBook(cur, usable_w)
     return g
 end
 
--- 读完的书：月份一行，书名缩进各占一行；按给定的高度预算往里填，填不下就截断。
--- 长期看月份只增不减，所以必须是"能放几行放几行"，不能固定条数。
+-- 读完的书：一行一本，日期在前、书名在后。
+-- 按给定的高度预算往里填，长期条目只增不减，所以必须"能放几行放几行"。
 local function finishedRows(fin_data, usable_w, budget_h)
     local g = VerticalGroup:new{ align = "left" }
-    if not fin_data or not fin_data.titles or #fin_data.titles == 0 then
-        table.insert(g, txt("—", FACE_M(), usable_w))
+    local list = fin_data and fin_data.titles
+    if not list or #list == 0 then
+        table.insert(g, txt("—", FACE_L(), usable_w))
         return g
     end
-    local by_month = {}
-    for _, t in ipairs(fin_data.titles) do
-        by_month[t.month] = by_month[t.month] or {}
-        table.insert(by_month[t.month], t.title)
-    end
-    local months = {}
-    for m in pairs(by_month) do months[#months + 1] = m end
-    table.sort(months, function(a, b) return a > b end)
 
-    local indent = Screen:scaleBySize(24)
-    local line_gap = Screen:scaleBySize(6)
-    local used, shown, total = 0, 0, #fin_data.titles
+    local items = {}
+    for _, t in ipairs(list) do items[#items + 1] = t end
+    table.sort(items, function(a, b)
+        local da, db = a.date or a.month or "", b.date or b.month or ""
+        if da ~= db then return da > db end
+        return (a.title or "") < (b.title or "")
+    end)
 
-    local function fits(h) return used + h <= budget_h end
-    local function push(w, h)
-        table.insert(g, w)
+    local date_w = Screen:scaleBySize(96)
+    local gap_w = Screen:scaleBySize(14)
+    local line_gap = Screen:scaleBySize(7)
+    local used, shown = 0, 0
+
+    for _, t in ipairs(items) do
+        local date = (t.date and t.date ~= "") and t.date or (t.month or "")
+        local dw = txt(date, FACE_M(), date_w)
+        local tw = txt(t.title or "", FACE_L(), usable_w - date_w - gap_w)
+        local h = math.max(dw:getSize().h, tw:getSize().h)
+        if used + h + line_gap > budget_h then break end
+        table.insert(g, HorizontalGroup:new{ align = "center",
+            LeftContainer:new{ dimen = Geom:new{ w = date_w, h = h }, dw },
+            HorizontalSpan:new{ width = gap_w },
+            tw })
         table.insert(g, VerticalSpan:new{ width = line_gap })
         used = used + h + line_gap
+        shown = shown + 1
     end
 
-    for _, m in ipairs(months) do
-        local mw = txt(m, FACE_L(), usable_w)
-        local mh = mw:getSize().h
-        if not fits(mh) then break end
-        push(mw, mh)
-        for _, title in ipairs(by_month[m]) do
-            local tw = txt(title, FACE_M(), usable_w - indent)
-            local th = tw:getSize().h
-            local row = HorizontalGroup:new{ align = "center",
-                HorizontalSpan:new{ width = indent }, tw }
-            if not fits(th) then break end
-            push(row, th)
-            shown = shown + 1
-        end
-    end
-    if shown < total then
-        local more = txt(string.format("…更早还有 %d 本", total - shown), FACE_S(), usable_w)
-        if fits(more:getSize().h) then push(more, more:getSize().h) end
+    if shown < #items then
+        local more = txt(string.format("…更早还有 %d 本", #items - shown), FACE_S(), usable_w)
+        if used + more:getSize().h <= budget_h then table.insert(g, more) end
     end
     return g
 end

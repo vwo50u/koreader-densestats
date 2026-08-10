@@ -77,7 +77,11 @@ function M.summarize(roots, lfs, loader)
                     local m = modified and tostring(modified):sub(1, 7) or "?"
                     months[m] = (months[m] or 0) + 1
                     local dir = path:match("([^/]+)%.sdr/[^/]+$") or path
-                    titles[#titles + 1] = { title = dir, month = m }
+                    titles[#titles + 1] = {
+                        title = dir,
+                        month = m,
+                        date = modified and tostring(modified) or "",
+                    }
                 end
             end
         end
