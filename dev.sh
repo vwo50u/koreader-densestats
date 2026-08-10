@@ -4,7 +4,8 @@
 #   ./dev.sh link     把插件软链进 KOReader.app
 #   ./dev.sh db <path> 把真实 statistics.sqlite3 拷进 KOReader 数据目录
 #   ./dev.sh run      启动 KOReader 并跟踪日志
-#   ./dev.sh check    luajit 语法检查（需 brew install luajit）
+#   ./dev.sh check    语法检查（用 KOReader.app 自带的 luajit）
+#   ./dev.sh test     跑单元测试
 #   ./dev.sh log      只看日志
 set -euo pipefail
 
@@ -37,10 +38,15 @@ db)
     echo "已拷到 $D/settings/statistics.sqlite3"
     ;;
 check)
-    command -v luajit >/dev/null || { echo "没装 luajit：brew install luajit"; exit 1; }
+    # 用 KOReader.app 自带的 luajit，不需要另外装
+    LJ="$KO/luajit"
+    [ -x "$LJ" ] || { echo "找不到 $LJ"; exit 1; }
     for f in "$PROJ"/densestats.koplugin/*.lua; do
-        luajit -bl "$f" >/dev/null && echo "OK   $f"
+        "$LJ" -e "local fn,e=loadfile('$f'); if fn then print('OK   '..'$f') else print('FAIL '..tostring(e)); os.exit(1) end"
     done
+    ;;
+test)
+    exec "$PROJ/test/run.sh"
     ;;
 log)
     D="$(datadir)"
