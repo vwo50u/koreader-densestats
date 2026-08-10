@@ -562,6 +562,14 @@ function DenseStats:init()
 
     local stats = self.ui and self.ui.statistics
     if not stats then return end
+    -- 这个接管点在 KOReader 2026.07 上核实过。更老的版本走的是
+    -- Screensaver.getReaderProgress，方法名对不上就什么都不会发生——
+    -- 与其静默失效，不如在日志里留一句，方便对着 crash.log 判断。
+    if type(stats.onShowReaderProgress) ~= "function" then
+        logger.warn("densestats: 未找到 onShowReaderProgress，睡眠屏幕接管失败，"
+                    .. "该 KOReader 版本可能过旧；菜单里的预览仍可用")
+        return
+    end
     if rawget(stats, "_densestats_wrapped") then return end
     stats._densestats_wrapped = true
 
