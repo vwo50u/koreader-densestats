@@ -32,6 +32,7 @@ local VerticalSpan = require("ui/widget/verticalspan")
 local WidgetContainer = require("ui/widget/container/widgetcontainer")
 local Finished = require("finished")
 local Moon = require("moon")
+local Stats = require("stats")
 local Widget = require("ui/widget/widget")
 local lfs = require("libs/libkoreader-lfs")
 local logger = require("logger")
@@ -42,8 +43,6 @@ local CFG = {
     max_sec = 120,          -- 单页停留时间上限（秒），与 statistics 插件默认一致
     week_start = 2,         -- 1=周日 2=周一
     curve_days = 30,
-    top_books = 6,
-    finished_months = 6,
     finished_cache_hours = 12,  -- sidecar 扫描结果缓存时长
     tz_offset = 0,              -- start_time 与设备墙钟一致，真机上为 0；设 nil 则自动推断
 }
@@ -63,41 +62,27 @@ local function tzOffset()
     return math.floor(os.difftime(now, os.time(u)))
 end
 
-local function fmtHM(sec)
-    sec = math.floor(sec or 0)
-    local h = math.floor(sec / 3600)
-    local m = math.floor((sec % 3600) / 60)
-    if h > 0 then return string.format("%dh%02d", h, m) end
-    return string.format("%dm", m)
-end
-
-local function fmtHours(sec)
-    return string.format("%.1fh", (sec or 0) / 3600)
-end
-
-local function rowsOf(res, ncol)
-    local out = {}
-    if not res or not res[1] then return out end
-    for i = 1, #res[1] do
-        local r = {}
-        for c = 1, ncol do
-            r[c] = res[c] and res[c][i] or nil
-        end
-        out[#out + 1] = r
-    end
-    return out
-end
+local fmtHM, fmtHours, rowsOf = Stats.fmtHM, Stats.fmtHours, Stats.rowsOf
 
 -- ============================ 取数 ============================
 
 local function collect()
     local db_path = DataStorage:getSettingsDir() .. "/statistics.sqlite3"
-    local conn = SQ3.open(db_path)
-    if not conn then return nil end
+    -- 不存在就别开：SQ3.open 会凭空建一个空库，后面查表全是错
+    if not lfs.attributes(db_path, "mode") then
+        logger.warn("densestats: statistics.sqlite3 不存在:", db_path)
+        return nil
+    end
+    local ok_conn, conn = pcall(SQ3.open, db_path)
+    if not ok_conn or not conn then
+        logger.warn("densestats: 打开数据库失败:", conn)
+        return nil
+    end
 
     local off = tzOffset()
     local cap = CFG.max_sec
     local data = {}
+    local function query()
 
     local sql_days = string.format([[
         SELECT date(start_time + %d, 'unixepoch') AS d,
@@ -149,8 +134,15 @@ local function collect()
         }
     end
 
-    -- 读完本数不从数据库来：完成状态存在 sidecar 里（见 finished.lua）
-    conn:close()
+    end
+
+    -- 查询失败也必须关连接，否则文件句柄会一直挂着
+    local ok_q, err = pcall(query)
+    pcall(function() conn:close() end)
+    if not ok_q then
+        logger.warn("densestats: 查询失败:", err)
+        return nil
+    end
     return data
 end
 
@@ -215,64 +207,19 @@ local function rescanFinished()
     return summary
 end
 
+local rescan_scheduled = false
 local function maybeRescanLater()
+    if rescan_scheduled then return end   -- ReaderUI 与 FileManager 各有一个插件实例
     local cache = loadCache()
     if cache and (os.time() - (cache.ts or 0)) < CFG.finished_cache_hours * 3600 then return end
-    UIManager:scheduleIn(20, function() rescanFinished() end)  -- 别和开书抢时间
+    rescan_scheduled = true
+    UIManager:scheduleIn(20, function()   -- 别和开书抢时间
+        rescan_scheduled = false
+        rescanFinished()
+    end)
 end
 
 -- ============================ 算数 ============================
-
-local function derive(data)
-    local d = {}
-    local today = os.date("*t")
-    local today_key = os.date("%Y-%m-%d")
-
-    local back = (today.wday - CFG.week_start) % 7
-    local week_key = os.date("%Y-%m-%d",
-        os.time({ year = today.year, month = today.month, day = today.day - back, hour = 12 }))
-    local month_key = os.date("%Y-%m")
-    local year_key = os.date("%Y")
-
-    d.today, d.week, d.month, d.year, d.total = 0, 0, 0, 0, 0
-    for day, s in pairs(data.by_day) do
-        d.total = d.total + s
-        if day == today_key then d.today = d.today + s end
-        if day >= week_key and day <= today_key then d.week = d.week + s end
-        if day:sub(1, 7) == month_key then d.month = d.month + s end
-        if day:sub(1, 4) == year_key then d.year = d.year + s end
-    end
-
-    d.pages_today, d.pages_week = 0, 0
-    for day, n in pairs(data.pages_by_day or {}) do
-        if day == today_key then d.pages_today = d.pages_today + n end
-        if day >= week_key and day <= today_key then d.pages_week = d.pages_week + n end
-    end
-
-    d.curve, d.curve_total = {}, 0
-    for i = CFG.curve_days - 1, 0, -1 do
-        local k = os.date("%Y-%m-%d",
-            os.time({ year = today.year, month = today.month, day = today.day - i, hour = 12 }))
-        local v = data.by_day[k] or 0
-        d.curve[#d.curve + 1] = v
-        d.curve_total = d.curve_total + v
-    end
-    d.avg30 = d.curve_total / CFG.curve_days
-
-    d.active_days = #data.day_list
-    d.avg_active = d.active_days > 0 and (d.total / d.active_days) or 0
-
-    local streak = 0
-    local i = data.by_day[today_key] and 0 or 1
-    while true do
-        local k = os.date("%Y-%m-%d",
-            os.time({ year = today.year, month = today.month, day = today.day - i, hour = 12 }))
-        if data.by_day[k] then streak = streak + 1; i = i + 1 else break end
-    end
-    d.streak = streak
-
-    return d
-end
 
 -- ============================ 画面 ============================
 
@@ -347,14 +294,15 @@ end
 
 -- 柱状曲线自绘：顺便画一条 1 小时参考虚线。
 -- 纵轴刻度取 max(峰值, 1 小时)，这样读得少的时候参考线也在画面里。
-local CurveWidget = Widget:extend{ values = nil, w = 0, h = 0, scale = 1, gap = 1 }
+local CurveWidget = Widget:extend{ values = nil, w = 0, h = 0, scale = 3600, gap = 1 }
 
 function CurveWidget:getSize()
     return Geom:new{ w = self.w, h = self.h }
 end
 
 function CurveWidget:paintTo(bb, x, y)
-    local n = #self.values
+    local n = #(self.values or {})
+    if n == 0 or self.w <= 0 or self.h <= 0 then return end
     local gap = self.gap
     local bar_w = math.max(2, math.floor((self.w - gap * (n - 1)) / n))
     local leftover = self.w - (bar_w * n + gap * (n - 1))
@@ -462,39 +410,9 @@ local function finishedRows(fin_data, usable_w, budget_h)
     return g
 end
 
-local function _unused_finishedRows(fin_data, usable_w, max_lines)
-    local g = VerticalGroup:new{ align = "left" }
-    if not fin_data or not fin_data.titles or #fin_data.titles == 0 then
-        table.insert(g, txt("—", FACE_M(), usable_w))
-        return g
-    end
-    local by_month = {}
-    for _, t in ipairs(fin_data.titles) do
-        by_month[t.month] = by_month[t.month] or {}
-        table.insert(by_month[t.month], t.title)
-    end
-    local months = {}
-    for m in pairs(by_month) do months[#months + 1] = m end
-    table.sort(months, function(a, b) return a > b end)
-
-    local lines = 0
-    for _, m in ipairs(months) do
-        if lines >= max_lines then break end
-        local row = HorizontalGroup:new{ align = "center" }
-        table.insert(row, txt(m, FACE_L(), math.floor(usable_w * 0.2)))
-        table.insert(row, HorizontalSpan:new{ width = Screen:scaleBySize(10) })
-        table.insert(row, txt(table.concat(by_month[m], " · "), FACE_M(),
-            math.floor(usable_w * 0.75)))
-        table.insert(g, row)
-        table.insert(g, VerticalSpan:new{ width = Screen:scaleBySize(7) })
-        lines = lines + 1
-    end
-    return g
-end
-
 -- 月相圆盘：白底上把"暗面"涂黑。
 -- 明暗分界是个椭圆：某一行的半宽为 w 时，分界线横坐标 xt = ±w·cos(2πp)。
-local MoonWidget = Widget:extend{ radius = nil, phase = 0 }
+local MoonWidget = Widget:extend{ radius = 8, phase = 0 }
 
 function MoonWidget:getSize()
     return Geom:new{ w = self.radius * 2 + 2, h = self.radius * 2 + 2 }
@@ -548,7 +466,7 @@ end
 local function buildWidget()
     local data = collect()
     if not data then return nil end
-    local d = derive(data)
+    local d = Stats.derive(data, os.time(), CFG)
 
     local pad = Screen:scaleBySize(16)
     local W, H = Screen:getWidth(), Screen:getHeight()
@@ -607,7 +525,8 @@ local function buildWidget()
     local footer_h = (ok_f and fh) or Screen:scaleBySize(30)
     root:resetLayout()
     local used_h = root:getSize().h
-    local budget = H - pad * 2 - used_h - footer_h - Screen:scaleBySize(24)
+    -- 12 是页脚上方的间距，也得从预算里扣，否则会顶出屏幕
+    local budget = H - pad * 2 - used_h - footer_h - Screen:scaleBySize(12) - Screen:scaleBySize(12)
     table.insert(root, finishedRows(fin_data, usable, math.max(0, budget)))
 
     table.insert(root, VerticalSpan:new{ width = Screen:scaleBySize(12) })
