@@ -482,9 +482,9 @@ local function finishedRows(fin_data, usable_w, budget_h)
                    + Screen:scaleBySize(6)
     local gap_w = Screen:scaleBySize(14)
     local line_gap = Size.padding.large
-    local used, shown = 0, 0
-    local last_h = 0            -- 最后一行的行高：退行时要拿它回滚 used
-
+    -- 装得下几行放几行，装不下就截断，末尾不再提示"还有 N 本"——
+    -- 区块标题那行的"已读完 · 共 N 本"已经给出了总数，提示行是重复信息。
+    local used = 0
     for _, t in ipairs(items) do
         local dw = txt(t.label, FACE_L(), date_w)
         local tw = txt(t.title or "", FACE_L(), usable_w - date_w - gap_w)
@@ -496,29 +496,6 @@ local function finishedRows(fin_data, usable_w, budget_h)
             tw })
         table.insert(g, VerticalSpan:new{ width = line_gap })
         used = used + h + line_gap
-        last_h = h
-        shown = shown + 1
-    end
-
-    if shown < #items then
-        -- 上面这个循环是贪心的，会把 budget_h 吃干净，fit 循环替提示行预留的那块
-        -- 空间照样会被填成书。所以提示行放不下时要退掉最后一行给它腾位置：
-        -- 宁可少显示一本，也要让用户知道下面还有。fit 循环按 min_fin_rows 行
-        -- + 提示行预留过空间（见 buildWidget 的 need），退一行后仍不少于 min_fin_rows 行，
-        -- 所以只退一行、不循环。shown > 1 是兜底：只剩一本时显示这本书比
-        -- 显示"还有 N 本"有用。
-        local function hintFor(n)
-            return txt(string.format("…更早还有 %d 本", n), FACE_S(), usable_w)
-        end
-        local more = hintFor(#items - shown)
-        if used + more:getSize().h > budget_h and shown > 1 then
-            table.remove(g)                     -- 退掉 VerticalSpan
-            table.remove(g)                     -- 退掉 HorizontalGroup
-            used = used - (last_h + line_gap)
-            shown = shown - 1
-            more = hintFor(#items - shown)      -- 少显示了一本，N 变了，文案得重建
-        end
-        if used + more:getSize().h <= budget_h then table.insert(g, more) end
     end
     return g
 end
@@ -536,7 +513,6 @@ end
 --   budget     留给"已读完"列表的高度预算（可能为负 = 溢出）
 --   fin_row_h  "已读完"一行占多高
 --   truncated  四列小块里有没有哪一格被截断
---   fin_hint_h "…更早还有 N 本"那行占多高
 local function layoutOnce(data, d, fin_data)
     local W, H = Screen:getWidth(), Screen:getHeight()
     -- 留白按屏幕"短边"的 6%，不能按 getWidth()：横屏时宽度是长边，
@@ -643,10 +619,6 @@ local function layoutOnce(data, d, fin_data)
     -- 一行"已读完"占多高：口径必须和 finishedRows 里的行高一致
     -- （同为辅助档 + Size.padding.large），否则 fit 循环会按错误的行高预留空间
     local fin_row_h = txt("2026-08", FACE_L()):getSize().h + Size.padding.large
-    -- 「…更早还有 N 本」那行的高度（辅助档，不带 line_gap——finishedRows 里它是
-    -- used + more:getSize().h <= budget_h，没有额外间距）。
-    -- 把它算进 fit 的门槛，否则列表一被截断这行提示就没地方画了。
-    local fin_hint_h = txt("…", FACE_S()):getSize().h
     table.insert(root, finishedRows(fin_data, usable, math.max(0, budget)))
 
     gap(12)
@@ -702,7 +674,7 @@ local function layoutOnce(data, d, fin_data)
             root,
         },
     }
-    return widget, budget, fin_row_h, (cut1 or cut2), fin_hint_h
+    return widget, budget, fin_row_h, (cut1 or cut2)
 end
 
 -- 一屏排不下就整体降字号重排。KOReader 官方处理"铺满一屏"就是这个套路：
@@ -724,11 +696,8 @@ local function buildWidget()
 
     local widget, step, tries = Layout.fitScale(CFG.fscale_steps, function(k)
         FSCALE = k
-        local w, budget, fin_row_h, truncated, fin_hint_h = layoutOnce(data, d, fin_data)
-        -- 门槛里带上提示行的高度：列表被截断时末尾要画「…更早还有 N 本」，
-        -- 不预留就会被挤掉。代价是字号可能降一档，这是有意的取舍。
-        local need = CFG.min_fin_rows * fin_row_h + fin_hint_h
-        local fits = (not truncated) and budget >= need
+        local w, budget, fin_row_h, truncated = layoutOnce(data, d, fin_data)
+        local fits = (not truncated) and budget >= CFG.min_fin_rows * fin_row_h
         return fits, w
     end)
 
