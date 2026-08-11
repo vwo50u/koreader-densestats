@@ -905,6 +905,121 @@ the whole build."
 
 ---
 
+### Task 4c: 「已读完」列表降到辅助档
+
+用户看桌面预览后指出：「已读完」列表的字大得出奇。属实——`finishedRows` 里日期和书名都用
+`FACE_M()`，与当前在读的书名**同一档**。一份三本书的归档清单，视觉重量和整屏唯一的焦点一样重。
+
+根源是 FACE_* 上方那条角色规则：「正文 给书名、日期这类主体内容」。它把「书名」当成一类，
+没区分**当前在读的那本**（焦点）和**历史清单里的条目**（参考信息）。这是 spec 的设计错误。
+
+修正后的规则：正文档只给当前在读的书名；「已读完」清单与「5% · 19/468 页 · 累计 0.0h」
+同属参考信息，用辅助档。
+
+**Files:**
+- Modify: `densestats.koplugin/main.lua`（FACE_* 上方注释、`finishedRows`、`layoutOnce` 的 `fin_row_h`）
+
+**Interfaces:**
+- Consumes: 无
+- Produces: 无
+
+⚠️ **关键连锁点**：`fin_row_h` 参与 fit 循环的接受条件
+（`budget >= CFG.min_fin_rows * fin_row_h`）。它和 `finishedRows` 内部的行高**必须同档**，
+否则 fit 循环会按错误的行高预留空间。所以下面四处 `FACE_M()` 必须**一起**改成 `FACE_L()`，
+漏掉任何一处都会让两边口径分叉。
+
+- [ ] **Step 1: 改 `finishedRows` 里的三处**
+
+在 `finishedRows` 中：
+
+```lua
+    local probe = txt("2026-08", FACE_M())
+```
+→
+```lua
+    local probe = txt("2026-08", FACE_L())
+```
+
+```lua
+        local dw = txt(t.label, FACE_M(), date_w)
+        local tw = txt(t.title or "", FACE_M(), usable_w - date_w - gap_w)
+```
+→
+```lua
+        local dw = txt(t.label, FACE_L(), date_w)
+        local tw = txt(t.title or "", FACE_L(), usable_w - date_w - gap_w)
+```
+
+空列表分支的 `txt("—", FACE_L(), usable_w)` 和末尾的
+`txt(..., FACE_S(), usable_w)` 本来就是辅助档，**不用改**。
+
+- [ ] **Step 2: 改 `layoutOnce` 里的 `fin_row_h`，口径跟上**
+
+```lua
+    local fin_row_h = txt("2026-08", FACE_M()):getSize().h + Size.padding.large
+```
+→
+```lua
+    -- 口径必须和 finishedRows 里的行高一致（同为辅助档 + Size.padding.large），
+    -- 否则 fit 循环会按错误的行高预留空间
+    local fin_row_h = txt("2026-08", FACE_L()):getSize().h + Size.padding.large
+```
+
+- [ ] **Step 3: 更新 FACE_* 上方的角色规则注释**
+
+把注释里这两行：
+
+```lua
+--   强调 只给统计大数字；正文 给书名、日期这类主体内容；
+--   辅助 给标签、说明、明细、页脚。
+```
+
+改成：
+
+```lua
+--   强调 只给统计大数字；
+--   正文 只给"当前在读"的书名——它是整屏唯一的焦点；
+--   辅助 给标签、说明、明细、页脚，以及"已读完"清单
+--        （那是归档参考，不该和焦点抢视觉重量）。
+```
+
+- [ ] **Step 4: 语法检查**
+
+Run: `./dev.sh check`
+Expected: 五个文件全 `OK`，退出码 0。
+
+- [ ] **Step 5: 单元测试仍全绿**
+
+Run: `./dev.sh test`
+Expected: 三个测试文件全通过（21 / 56 / 19）。
+
+- [ ] **Step 6: 桌面预览，核对连锁效果**
+
+Run: 后台启动 `DENSESTATS_DEBUG=1 DENSESTATS_AUTOSHOW=1 ./dev.sh run`，等约 25 秒，
+`pkill -f KOReader`，再 grep `/tmp/densestats-run.log`。
+
+Expected（**这几项都会变，如实报出来**）：
+1. 行变矮 → `fin_row_h` 变小 → 接受门槛 `2 * fin_row_h` 变低 → **`FSCALE` 可能升到 1.30、
+   `tries` 可能变成 1**。这是预期的连锁反应，不是 bug——字号变大和书单变长同时发生。
+2. `densestats slack:` 那行的 `rest` 会变（行矮了，「已读完」块可能多放一行，也可能因此
+   `rest` 反而变小）。
+3. 预览里「已读完」的条目应该和「5% · 19/468 页」一样大，明显小于书名。
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add densestats.koplugin/main.lua
+git commit -m "style: demote the finished-books list to the auxiliary tier
+
+The list shared the body tier with the currently-reading book title, so
+a three-book archive carried the same visual weight as the screen's only
+focal point. The role rule lumped all book titles together; split it so
+the body tier means the current book and nothing else. fin_row_h moves
+with it — it feeds the fit loop's acceptance test and the two must agree."
+```
+
+---
+
 ### Task 5: 真机（PW3）验证
 
 **Files:**
