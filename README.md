@@ -1,129 +1,158 @@
 # densestats.koplugin
 
-高密度阅读统计睡眠屏幕。接管 KOReader 内置的 `readingprogress` 睡眠屏幕类型
-（`frontend/ui/screensaver.lua` 里 `widget = Screensaver.getReaderProgress()`），
-设置里仍然选「在休眠屏幕上显示阅读进度」，画出来的换成本插件的版本。
+**English** · [简体中文](README.zh-CN.md)
 
-数据只读 statistics 插件的 `statistics.sqlite3`，不写。**statistics 插件必须保持启用**
-（screensaver.lua 会检查 `ui.statistics`，不在就退回随机图片）。
+A dense reading-statistics screensaver for [KOReader](https://github.com/koreader/koreader).
 
-## 显示内容
+It takes over KOReader's built-in `readingprogress` screensaver type — the one
+`frontend/ui/screensaver.lua` reaches through `Screensaver.getReaderProgress()`. Keep
+choosing "Show reading progress on the sleep screen" in the settings; what gets drawn is
+this plugin's version instead.
 
-自上而下：
+The plugin only **reads** the statistics plugin's `statistics.sqlite3`, never writes to it.
+**The statistics plugin must stay enabled** — `screensaver.lua` checks for `ui.statistics`
+and falls back to a random image if it isn't there.
 
-- **两排统计**：今日 / 本周 / 本月 / 今年 阅读时长；连续天数 / 累计时长 / 今日页数 / 本周页数
-- **最近 30 天柱状曲线**，横穿一条有效日均的参考虚线（左侧标注日均时长），
-  一眼能看出哪些天超过了自己的平均水平
-- **当前在读**：书名、进度条、百分比 / 页码 / 该书累计时长
-- **已读完**：按日期倒序的书单，同月只在第一行标月份
-- **页脚**：日期时间 · 电量
+> Heads up for contributors: the source comments are written in Chinese. The code itself
+> reads fine without them, but the reasoning behind the layout decisions does not.
 
-### 字号是自适应的
+## What it shows
 
-三档字号（强调 / 正文 / 辅助）取 KOReader 命名档位的设计尺寸 25 / 20 / 15，
-再整体乘一个系数 `FSCALE`。渲染时从 1.30 起逐档往下试，第一个「放得下」的档位胜出——
-判据是四列统计没有任何一格被截断，且「已读完」至少放得下 2 行。全都不满足就用
-最小档兜底，宁可字小也不把页脚顶出屏幕。
+Top to bottom:
 
-这是 KOReader 官方处理「铺满一屏」的套路（见 `calendarview.lua`、`keyvaluepage.lua`、
-`menu.lua`），比写死一组「在我这台机器上刚好」的数字可靠：它不假设任何设备参数，
-只问「在这次的屏幕尺寸和缩放系数下放不放得下」，分辨率、宽高比、方向、用户的
-「屏幕 DPI」覆盖、内容长度全都自动被覆盖。
+- **Two rows of figures** — time read today / this week / this month / this year; then
+  streak, lifetime total, pages today, pages this week
+- **A 30-day bar chart** with a dashed reference line at your active daily average
+  (labelled to the left of the plot), so you can see at a glance which days beat it
+- **Currently reading** — title, progress bar, percentage / page / time spent on that book
+- **Finished** — books in reverse date order, the month printed only on its first row
+- **Footer** — date, time, battery
 
-`DENSESTATS_DEBUG=1` 会在日志里打出选中的档位、试了几次、以及排版耗时。
+### The type sizes adapt to the screen
 
-## 目录
+Three tiers (emphasis / body / auxiliary) start from KOReader's own named design sizes
+of 25 / 20 / 15, then get multiplied by a factor. Rendering tries 1.30 first and steps
+down until the layout fits: no cell in the four-column rows may be truncated, and the
+finished list must still have room for two entries. If nothing fits, the smallest step
+wins — small type beats pushing the footer off the screen.
+
+This is how KOReader itself handles fill-the-screen widgets (see `calendarview.lua`,
+`keyvaluepage.lua`, `menu.lua`), and it beats hardcoding numbers that happen to look
+right on one device. It assumes nothing about the hardware; it only asks whether the
+content fits *this* screen at *this* scale factor. Resolution, aspect ratio, orientation,
+a user-set "Screen DPI" override, and content length are all absorbed automatically.
+
+Set `DENSESTATS_DEBUG=1` to log the chosen factor, how many passes it took, and the
+layout time.
+
+## Layout
 
 ```
 densestats.koplugin/
-  main.lua       渲染与插件挂载（唯一碰 KOReader widget 的地方）
-  stats.lua      时长格式化 + 时间序列推导（纯 Lua，可单测）
-  finished.lua   扫 sidecar 统计读完的书（纯 Lua，可单测）
-  layout.lua     排版算术：余白分配、降档搜索（纯 Lua，可单测）
-sql/queries.sql  口径校验用的独立 SQL
-test/            单元测试，用 KOReader 自带的 luajit 直接跑
-dev.sh           开发脚本
+  main.lua       rendering and plugin wiring (the only file touching KOReader widgets)
+  stats.lua      duration formatting + time-series derivation (pure Lua, unit-tested)
+  finished.lua   scans sidecars to count finished books (pure Lua, unit-tested)
+  layout.lua     layout arithmetic: slack allocation, step-down search (pure Lua, tested)
+sql/queries.sql  standalone SQL for cross-checking the figures
+test/            unit tests, run directly with the luajit KOReader ships
+dev.sh           development script
 ```
 
-## 调试路线
+## Working on it
 
-### 1. SQL 层（先做这个，跟 KOReader 无关）
+### 1. The SQL layer
+
+Start here — it has nothing to do with KOReader:
 
 ```
 sqlite3 -header -column /path/to/statistics.sqlite3 < sql/queries.sql
 ```
 
-重点核对第 3 段「读完判定明细」——那是启发式，肯定有误判。
+Pay attention to section 3, "finished-book detection". It is a heuristic and it
+definitely gets some books wrong.
 
-### 2. macOS 桌面调试
+### 2. On macOS
 
-macOS 版 KOReader **不在 Releases 里**，要从 GitHub Actions 的构建产物下载
-（arm64），见 wiki: Installation on MacOS。macOS 15.7 以上首次打开会被 Gatekeeper 拦，
-需到「系统设置 → 隐私与安全性」最下方点「仍要打开」。
+The macOS build of KOReader is **not in Releases**; download the arm64 artifact from a
+GitHub Actions run (see the wiki page "Installation on MacOS"). On macOS 15.7 and later,
+Gatekeeper blocks the first launch — approve it under System Settings → Privacy &
+Security, at the bottom.
 
-装好之后：
+Then:
 
 ```
-./dev.sh link                                  # 软链插件进 KOReader.app
-./dev.sh db ~/Downloads/statistics.sqlite3     # 灌真实数据
-./dev.sh run                                   # 启动
+./dev.sh link                                  # symlink the plugin into KOReader.app
+./dev.sh db ~/Downloads/statistics.sqlite3     # load real data
+./dev.sh run                                   # launch
 ```
 
-**桌面平台没有睡眠屏幕功能**，所以钩子不会被触发。用插件自带的调试入口：
-主菜单 → 更多工具 → 「预览：密集统计屏」，点一下屏幕关闭。
+**Desktop builds have no sleep screen**, so the hook never fires. Use the plugin's own
+entry point: main menu → More tools → "预览：密集统计屏" (Preview). Tap to dismiss.
 
-不建议从源码 `./kodev build` —— 本机缺 cmake / autoconf / nasm / luarocks，
-在 macOS arm64 上从零编译 koreader-base 是几小时起的活，调 UI 用不上。
+Building from source with `./kodev build` is not worth it for UI work — compiling
+koreader-base from scratch on macOS arm64 takes hours.
 
-### 3. 真机
+### 3. On a device
 
-插件文件夹丢进设备的 `koreader/plugins/`，重启。日志在 `koreader/crash.log`
-（`logger.warn` 的输出会进去）。装 KOReader 自带的 SSH 插件可以远程 tail。
+Copy the plugin folder into `koreader/plugins/` and restart. Logs land in
+`koreader/crash.log` (`logger.warn` output goes there). KOReader's bundled SSH plugin
+lets you tail it remotely.
 
-## 已核实的 KOReader 行为
+## KOReader behaviour worth knowing
 
-这几条当初列为「待验证」，后来读源码逐条确认过，写在这里省得再查
-（行号对应 KOReader 2026.07）：
+These started as open questions and were settled by reading the source. Recorded here so
+nobody has to look them up again (line numbers are from KOReader 2026.07):
 
-- **`Screen:scaleBySize(px)` 按屏幕短边缩放，默认完全不看 DPI**
-  （`ffi/framebuffer.lua:414-425`）：`size_scale = min(w, h) / 600`，只有用户在
-  设置里手动指定过「屏幕 DPI」时 DPI 才参与。所以「写死一个数字会不会在别的
-  分辨率上崩」这个担心是多余的——它在每台设备上放大同样的倍数。
-- **`Font:getFace(name, size)` 的第二参是「未缩放的设计尺寸」**，内部仍会过
-  `scaleBySize`（`frontend/ui/font.lua:269-277`）。
-- **`FrameContainer` 的 `width` / `height` 不被 `getSize()` 采纳**
-  （`framecontainer.lua:53-66` 完全忽略它们，只有 `paintTo` 在 116-117 行拿去画
-  背景和边框）。本插件正好依赖这个行为：`getSize()` 返回内容高 + 上下 padding，
-  外层 `CenterContainer` 才能算出 0 偏移。
-- **`readingprogress` 模式不会被强制转成竖屏**（`screensaver.lua:330-335` 把它
-  明确排除在 `modeExpectsPortrait()` 之外）。本插件的尺寸基准因此一律取屏幕短边
-  或内容区高度，不取 `getWidth()` / `getHeight()`。**但横屏未做真机验证。**
-- **`TextWidget` 的高度只取决于 face，与文本内容无关**
-  （`textwidget.lua:112-113`），所以量行高用任意等档文字当探针都准。
-- **插件加载顺序**：插件按目录名字母序实例化，`densestats` 排在 `statistics`
-  前面，所以 `init()` 时 `self.ui.statistics` 还不存在，钩子必须挂在
-  `onReaderReady`。KOReader 2026.07 还把插件的 `onXxx` 处理器包成了「可调用的表」
-  （带 `__call` 的 metatable），判断时不能只认 `type == "function"`。
+- **`Screen:scaleBySize(px)` scales by the screen's *short edge*, and by default ignores
+  DPI entirely** (`ffi/framebuffer.lua:414-425`): `size_scale = min(w, h) / 600`. DPI
+  only enters the formula when the user has overridden "Screen DPI" by hand. So the
+  usual worry — "will a hardcoded number break on another resolution?" — is misplaced;
+  it scales by the same factor on every device.
+- **The second argument to `Font:getFace(name, size)` is an *unscaled* design size**; the
+  function still runs it through `scaleBySize` internally (`frontend/ui/font.lua:269-277`).
+- **`FrameContainer`'s `width` / `height` are ignored by `getSize()`**
+  (`framecontainer.lua:53-66`; only `paintTo` uses them, at lines 116-117, to draw the
+  background and border). This plugin depends on that: `getSize()` returns content height
+  plus padding, which is what lets the outer `CenterContainer` compute a zero offset.
+- **The `readingprogress` mode is not forced into portrait** — `screensaver.lua:330-335`
+  explicitly excludes it from `modeExpectsPortrait()`. Every size here is therefore
+  derived from the short edge or the content height, never from `getWidth()` /
+  `getHeight()`. **Landscape has not been verified on hardware, though.**
+- **A `TextWidget`'s height depends only on the face, not on the text**
+  (`textwidget.lua:112-113`), so any string in the right tier works as a probe for
+  measuring row height.
+- **Plugin load order**: plugins are instantiated in directory-name order, so `densestats`
+  comes before `statistics` and `self.ui.statistics` does not exist yet during `init()` —
+  the hook has to go in `onReaderReady`. KOReader 2026.07 also wraps plugin `onXxx`
+  handlers in *callable tables* (a metatable with `__call`), so checking
+  `type == "function"` is not enough.
 
-## 已知限制
+## Known limitations
 
-- **横屏未验证**。方向无关的尺寸基准已经就位，但没在真机上转横屏跑过。
-- **降到最小档仍然放不下时没有降级手段**。竖屏 + 正常 DPI 下够不着，但真发生
-  的话内容会被裁切。要补的话方向是砍掉整块内容，而不是继续缩字号。
-- **读完判定是启发式的**，见下面的口径说明。
+- **Landscape is unverified.** The orientation-independent sizing is in place, but it has
+  never been run sideways on real hardware.
+- **No fallback if even the smallest type step overflows.** Unreachable in portrait at
+  normal DPI, but content would be clipped if it happened. The fix would be dropping a
+  whole section, not shrinking type further.
+- **Finished-book detection is a heuristic** — see the notes below.
 
-渲染整体包在 `pcall` 里，失败会退回内置页面，不会导致设备睡不着。
+All rendering is wrapped in `pcall`; on failure it falls back to the built-in page, so a
+bug here can never keep the device awake.
 
-## 口径说明
+## How the figures are defined
 
-- **单页时长截断**：原始 duration 含"忘了合上"的脏数据，按 `CFG.max_sec = 120` 截断，
-  与 statistics 插件自身做法一致。因此累计值会小于 `book.total_read_time`。
-- **读完判定**：完成状态存在书旁边的 sidecar 里，不在数据库中。这里用
-  `MAX(page/total_pages) >= 0.97` 且取最后一次阅读的月份，属于估算。
-- **时区**：`start_time` 是 UTC 秒，偏移在 Lua 里算好再传进 SQL（不依赖 SQLite 的
-  `localtime` 修饰符，Kindle 系统时区常为 UTC）。
-- **连续天数**：今天还没读不算断，从昨天往回数。
+- **Per-page duration is capped.** Raw durations include "forgot to close the book" noise,
+  so each is capped at `CFG.max_sec = 120`, matching what the statistics plugin does
+  itself. The lifetime total is therefore lower than `book.total_read_time`.
+- **Finished detection.** Completion status lives in the sidecar next to the book, not in
+  the database. This uses `MAX(page/total_pages) >= 0.97` plus the month of the last read
+  session — an estimate.
+- **Time zones.** `start_time` is in UTC seconds; the offset is computed in Lua and passed
+  into SQL rather than relying on SQLite's `localtime` modifier, because Kindles usually
+  run with the system time zone set to UTC.
+- **Streaks.** Not having read *today* does not break the streak; counting starts from
+  yesterday.
 
-## 许可
+## Licence
 
-[AGPL-3.0](LICENSE)，与 KOReader 本体一致。
+[AGPL-3.0](LICENSE), matching KOReader upstream.
