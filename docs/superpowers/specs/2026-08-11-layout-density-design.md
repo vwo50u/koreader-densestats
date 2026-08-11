@@ -1,133 +1,186 @@
-# 睡眠屏布局密度调整：放大字号 + 收紧留白
+# 睡眠屏布局密度调整：自适应字号 + 收紧留白
 
 日期：2026-08-11
-状态：待实现
+状态：待实现（v2，调研后重写）
 
 ## 问题
 
-真机（PW3，1072×1448，300 DPI）上的观感有两个毛病：
+真机（PW3，1072×1448）上字偏小、版面偏空。但调研 KOReader 源码后发现，
+底下压着三个更要紧的问题：
 
-1. **字太小**。字号锁在 KOReader 的三个命名档位（`largeffont` 25 / `ffont` 20 /
-   `smallffont` 15）。正文 20 档在 300 DPI 下约占屏高 2.5%，一屏用不到 40%
-   的面积承载信息。
-2. **太空旷**。`main.lua:567-578` 把全部剩余高度平摊进 10 个区块间隙。
-   「已读完」列表按预算填完之后，只要书不够多，剩下的空白就全被摊成了缝隙——
-   内容没变多，间隙全撑大了，整屏看着松垮。
+1. **没有「装不下就缩」的路径。** `main.lua:568` 是 `if rest > 0 then`——
+   `rest < 0` 时什么都不做，内容直接画出屏幕、页脚消失。这是现有缺陷。
+2. **横屏必翻车。** `screensaver.lua:330-335` 明确把 `readingprogress` 排除在
+   「强制转竖屏」之外，本插件正好接管这个模式。官方 `readerprogress.lua:41-47`
+   有横竖屏分支，本插件没有。
+3. **空旷的来源**：`main.lua:567-578` 把全部剩余高度平摊进 10 个区块间隙。
+   「已读完」列表填完预算后，只要书不够多，剩下的空白全被摊成缝隙。
 
-两者是同一个根因的两面：内容占的面积太小，而多出来的面积被当成了缝隙。
+## 调研结论（全部经源码核实）
+
+**`Screen:scaleBySize(px)` 按屏幕短边缩放，默认完全不看 DPI**
+（`ffi/framebuffer.lua:414-425`）：
+
+```lua
+local size_scale = math.min(self:getWidth(), self:getHeight()) / 600
+local dpi_scale = size_scale
+if self.dpi_override then dpi_scale = self.dpi / 160 end
+return math.ceil(px * (size_scale + dpi_scale) / 2)
+```
+
+推论：`Font:getFace(name, size)` 的 size 是**未缩放的设计尺寸**，内部仍过
+`scaleBySize`（`frontend/ui/font.lua:269-277`）。所以写死一个数字**不会**破坏
+跨分辨率一致性——它在每台设备上放大同样的倍数。真正会让版面崩掉的变量是
+**横屏、用户的「屏幕 DPI」覆盖、内容长度**，跟分辨率和 DPI 本身无关。
+
+**官方处理「铺满一屏」的做法是从可用空间反推字号，装不下就降号重试**：
+
+- `plugins/statistics.koplugin/calendarview.lua:1305-1319`：先用
+  `TextBoxWidget:getFontSizeToFitHeight` 从可用高度算字号，再用「最宽可能字符串」
+  当探针 `while` 循环降号，直到 `test_w:getWidth() <= day_inner_width`
+- `frontend/ui/widget/keyvaluepage.lua:492-501`：行高 = 可用高度 / 每页条目数，
+  字号从行高反推并封顶 22；floor 损失的像素对半分给上下
+- `frontend/ui/widget/menu.lua:135-141`：把用户设的字号封顶到「至少能显示一行」
+
+**`TextWidget:isTruncated()`（`frontend/ui/widget/textwidget.lua:307-310`）**
+可以直接问「这段文字被 `max_width` 截断了吗」，比自己量宽度可靠。
+
+**官方同位置竞品 `readerprogress.lua`** 只用命名档位、不做字号自适应
+（`:36-38`），但有横竖屏间距分支（`:41-47`），进度条高度用
+`Screen:scaleBySize(14)`（`:262`）。
 
 ## 目标
 
-信息项一个不加不减，只做「放大 + 收紧」。
+信息项一个不加不减。字号在**放得下的前提下**尽量大，放不下自动降档，
+任何设备/方向/DPI 设置下都不溢出屏幕。
 
-**非目标**：不新增统计维度，不改数据层，不动 `stats.lua` / `finished.lua`。
-
-## 约束
-
-- KOReader 的命名字号档位最大只到 `tfont` = 26，比现在的 `largeffont` = 25
-  只大 1，靠换档位放不大。
-- `Font:getFace(name, size)` 的第二参数会覆盖 sizemap 查表
-  （`frontend/ui/font.lua:273`），且覆盖后仍走 `Screen:scaleBySize(size)`
-  （同文件 276 行），所以显式尺寸照样是 DPI 无关的。
-- `ffont` / `smallffont` / `largeffont` 三者在 fontmap 里都指向
-  `NotoSans-Regular.ttf`（同文件 49-51 行），统一用 `ffont` + 显式尺寸
-  不会改变字体族。
+**非目标**：不新增统计维度，不改数据层，不改版式结构（不拆两排、不换布局）。
 
 ## 方案
 
-### 1. 字号：三档显式尺寸，收进 CFG
+### 1. 三档字号 = 命名档位基准值 × 自适应系数
 
-在 `CFG` 里加：
+保留现有「三档、按角色固定分配」的设计，基准值就取 KOReader 命名档位的原始
+设计尺寸（`font.lua:90-92`）：强调 25、正文 20、辅助 15。整体乘一个系数
+`FSCALE`，由下面的 fit 循环决定。
 
 ```lua
-font = { v = 34, m = 24, l = 18 },   -- 强调 / 正文 / 辅助
+local BASE_V, BASE_M, BASE_L = 25, 20, 15
+local FSCALE = 1.0   -- 由 buildWidget 的 fit 循环设定
+local function FACE_V() return Font:getFace("largeffont", math.max(8, math.floor(BASE_V * FSCALE + 0.5))) end
+local function FACE_M() return Font:getFace("ffont",      math.max(8, math.floor(BASE_M * FSCALE + 0.5))) end
+local function FACE_L() return Font:getFace("smallffont", math.max(8, math.floor(BASE_L * FSCALE + 0.5))) end
 ```
 
-`FACE_V` / `FACE_M` / `FACE_L` 全部改成 `Font:getFace("ffont", CFG.font.X)`。
-`FACE_S` 仍是 `FACE_L` 的别名，不变。
+字体族保持各自原样（三者在 fontmap 里都指向 `NotoSans-Regular.ttf`，
+`font.lua:49-51`，所以换不换名字都不影响字形）。
 
-角色分配沿用现有约定，不新增档位：
+### 2. fit 循环
 
-| 档位 | 尺寸 | 用途 |
-|------|------|------|
-| 强调 `v` | 34（原 25，+36%） | 只给统计大数字（`cell` 的 value） |
-| 正文 `m` | 24（原 20，+20%） | 书名、已读完列表的日期与书名 |
-| 辅助 `l` | 18（原 15，+20%） | 标签、进度明细、区块标题、页脚 |
+`buildWidget` 的函数体拆成 `layoutOnce(data, d)`，返回
+`widget, budget, fin_row_h, truncated`。外层从大到小试系数：
 
-### 2. 配套放大两个图形元素
+```lua
+CFG.fscale_steps = { 1.30, 1.20, 1.10, 1.00, 0.90, 0.80, 0.70, 0.60 }
+CFG.min_fin_rows = 2
+```
 
-字变大后图形不跟着放会显瘦：
+接受条件：**四列小块没有任何一格被截断**，且 **`budget >= min_fin_rows * fin_row_h`**。
+全部档位都不满足时用最后一档兜底——宁可字小，也不能把页脚顶出屏幕。
 
-- 曲线高度：`Screen:getHeight() * 0.10` → `* 0.12`（`main.lua:391`）
-- 进度条高度：`Screen:scaleBySize(10)` → `scaleBySize(14)`（`main.lua:410`）
+起点 1.30 使 PW3 竖屏的观感接近「强调 32 / 正文 26 / 辅助 20」，比现状大约三成。
+`min_fin_rows = 2` 是用户的选择：字号优先，「已读完」保底 2 行。
 
-### 3. 间隙设上限，余白归上下边距
+截断检测走 `TextWidget:isTruncated()`。`cellRow` 增加第二个返回值报告本排是否有截断。
+随着 FSCALE 下降文字变窄而 `cap_w` 不变，截断是单调消失的，循环必然收敛。
 
-改写 `main.lua:567-578` 的弹性分配，从「全部平摊」改成两步：
+**为什么这在多设备上成立**：它不假设任何设备参数，只问「在这次的
+`Screen:getWidth()/getHeight()` 和这次的 `scaleBySize` 之下放不放得下」。
+分辨率、宽高比、方向、DPI 覆盖、内容长度全部自动覆盖。
 
-**第一步：间隙按比例吸收，但有上限。**
-每个 flex 间隙最多长到基准值的 `CFG.gap_max_ratio` = 1.6 倍，
-即单个间隙的可增长量 `cap_i = floor(base_i * 0.6)`。
-设 `slack = Σ cap_i`，实际分配 `give = min(rest, slack)`，
-按 `cap_i` 的比例分给各间隙：`give_i = floor(cap_i * give / slack)`，
-除不尽的余数（`give - Σ give_i`）全部给最后一个间隙。
+**成本**：最坏 8 次重排，只做 `getSize()`（触发 xtext shaping），不 paint；
+freetype face 按 `realname..size` 缓存（`font.lua:288-293`）。多数情况第一档就通过。
+这发生在入睡路径上，**必须实测耗时**，超过 200ms 就要改成解析式预估高度。
 
-**第二步：吸收不掉的部分变成上下边距。**
-`rest_after = rest - give`，拆成 `top = floor(rest_after / 2)`、
-`bottom = rest_after - top`，各造一个 `VerticalSpan`：
-`table.insert(root, 1, top_span)`，`table.insert(root, bottom_span)`
-（追加在页脚之后）。这两个 span **不加入 `flex` 表**。
+### 3. 留白按短边取比例
 
-最后照旧 `root:resetLayout()`——`getSize()` 会缓存 `_offsets`，改完宽度不重置
-会在 `paintTo` 时崩（verticalgroup.lua:51），这条现有注释保留。
+```lua
+local W, H = Screen:getWidth(), Screen:getHeight()
+local pad = math.max(Size.padding.fullscreen, math.floor(math.min(W, H) * 0.06))
+```
 
-**预期效果**：10 个基准间隙合计 149（`scaleBySize` 前的设计值），
-可吸收的松弛量只有约 89（同样是缩放前），在 PW3 上折合 ~160px。
-相对 1448px 的屏高，这点松弛吃不下多少余白，
-所以间隙实际上基本保持设计值，绝大部分余白变成对称的上下边距。
-内容块紧凑，整体垂直居中，读起来像刻意的页边距而不是没排满。
+原来按 `getWidth()` 取，横屏时宽度是长边，会白白吃掉本就紧张的高度。
+PW3 横屏下这一条把 pad 从 86 降到 64。
 
-`flex` 为空时（理论上不会发生）跳过第一步，全部余白进上下边距。
+### 4. 曲线高度按可用高度，进度条对齐官方
 
-### 4. 保持不变
+- 曲线：`Screen:getHeight() * 0.10` → `(H - pad*2) * 0.12`。横屏下按屏高取
+  和按可用高度取差得远，后者才是「占内容区 12%」的本意。
+- 进度条：`Screen:scaleBySize(10)` → `scaleBySize(14)`，与
+  `readerprogress.lua:262` 一致。
 
-- 左右留白 6%（`Size.padding.fullscreen` 兜底）
-- `cellRow` 的两端对齐算法
-- 「已读完」列表的预算逻辑（`main.lua:551-558`）：它仍然先吃掉全部剩余高度，
-  只有书不够时才会出现余白，那时垂直居中才生效
-- 日期列宽按实测文字宽度（`main.lua:441-443`）——字号一变这条尤其重要
-- 整体 `pcall` 兜底，构建失败退回内置屏保
+### 5. 间隙按基准值比例分配，封顶 1.6 倍，余白对称归上下
+
+替换 `main.lua:567-578` 的均匀平摊：
+
+```
+want_i  = floor(rest * base_i / base_total)
+limit_i = floor(base_i * (gap_max_ratio - 1))
+add_i   = min(want_i, limit_i)
+spare   = rest - Σ add_i
+top     = floor(spare / 2)
+bottom  = spare - top
+```
+
+`top` / `bottom` 各造一个 `VerticalSpan`，分别插到 `root` 最前和追加在页脚之后，
+**不加入 `flex` 表**。效果是内容块紧凑并整体垂直居中。
+
+按基准值比例分（而不是均分）是为了保住疏密节奏：`gap(22)` 该比 `gap(5)` 多拿。
+均分 + 封顶会让 `gap(5)` 先触顶而 `gap(22)` 还很空。
+
+官方先例：`keyvaluepage.lua:493-495`（floor 损失的像素对半分给上下）、
+`calendarview.lua:1154-1156`（列宽算完把余量反推回 `outer_padding`）。
+
+`gap()` 需要记下基准宽度（`sp._base`）供比例计算使用。
+
+### 6. 保持不变
+
+- `cellRow` 的两端对齐算法（只加截断上报，不改分配逻辑）
+- 「已读完」列表的预算逻辑（`main.lua:551-558`）
+- 日期列宽按实测文字宽度（`main.lua:441-443`）——字号会变，这条尤其重要
+- 整体 `pcall` 兜底
+- **`resetLayout()`**：`getSize()` 会缓存 `_offsets`，改完子元素宽度或往 `root` 里
+  插东西必须重置，否则 `paintTo` 时 `_offsets[i]` 为 nil 直接崩
+  （`frontend/ui/widget/verticalgroup.lua:51`）
 
 ## 改动范围
 
-只改 `densestats.koplugin/main.lua`，四处：
-
-1. `CFG` 加 `font` 和 `gap_max_ratio` 两个字段（约 52-60 行）
-2. `FACE_V` / `FACE_M` / `FACE_L` 定义（269-272 行）及其上方的注释块
-3. 曲线高度（391 行）、进度条高度（410 行）
-4. flex 分配逻辑（567-578 行）
+- 新建 `densestats.koplugin/layout.lua`：纯排版算术（`distributeSlack`、`fitScale`）
+- 新建 `test/test_layout.lua`，挂进 `test/run.sh`
+- 改 `densestats.koplugin/main.lua`：CFG、FACE_*、`curveWidget`、`currentBook`、
+  `cellRow`、`buildWidget` 拆分与 fit 循环、间隙分配
+- 改 `README.md`：记录真机验证
 
 `stats.lua`、`finished.lua`、`_meta.lua` 不动。
 
 ## 验证
 
 1. `./dev.sh check` —— 语法检查通过
-2. `./dev.sh test` —— 现有单元测试全绿（改动不触及 `stats.lua` /
-   `finished.lua`，应当零影响；若有红，说明改错了地方）
-3. `DENSESTATS_DEBUG=1 ./dev.sh run` —— 看 `densestats layout:` 那行日志，
-   确认三档字高确实变成了新值、曲线高度变化符合预期
-4. 桌面预览（主菜单 → 更多工具 → 「预览：密集统计屏」）目测排版
-5. **真机（PW3）验证，这一步不可省**：
-   - 第一排四列「今日/本周/本月/今年」不换行、不截断
-   - 第二排四列不换行，尤其「累计 210h」这种五字符数值，
-     和「今日页数」+ 附注「本周 N 页」这一列
-   - 内容块整体垂直居中，页脚不被顶出屏幕
-   - 「已读完」列表在书多时仍能填满，不留突兀空白
+2. `./dev.sh test` —— 含新增的 `test_layout.lua` 全绿
+3. `DENSESTATS_DEBUG=1 ./dev.sh run` —— 日志里确认选中的 FSCALE 和重排次数，
+   **并记录 fit 循环耗时**
+4. 桌面预览目测：间隙紧凑、内容垂直居中、页脚可见
+5. **真机（PW3）验证**：
+   - 两排四列不换行、不截断
+   - 内容垂直居中，页脚完整可见
+   - 「已读完」至少 2 行
+   - **横屏睡眠**：把设备转横再睡，确认不溢出（这是本次新增的主要保障）
 
-## 已知取舍
+## 已知取舍与风险
 
-- 已读完列表用正文档（24，原 20），行高变大 → 同样高度预算下少显示 1-2 本书。
-  这是「放大」的必然代价，接受。
-- 四列小块在 34px 下变宽。按 PW3 估算单列约 150px、可用宽 944px、
-  单列上限 236px，有余量，但这是**估算**，必须靠上面第 5 步真机确认。
-  真机若挤，退路是把强调档从 34 降到 30。
+- `min_fin_rows = 2`：字号优先，「已读完」从命名档位下的 3 行减到 2 行。
+- fit 循环最坏 8 次重排，耗时未实测。超 200ms 需改成解析式预估。
+- 调研中的高度数字来自源码复刻的模型，**不是真机实测**，模型可能漏算某个 span。
+  所有定量结论都以第 5 步真机为准。
+- 字符串宽度估算未走 HarfBuzz（无 kerning / CJK 回退字体的真实 advance），
+  截断阈值是边缘判断——但 `isTruncated()` 走的是真实排版，所以运行时判断是准的。
