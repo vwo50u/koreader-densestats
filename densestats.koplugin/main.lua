@@ -37,6 +37,7 @@ local Widget = require("ui/widget/widget")
 local lfs = require("libs/libkoreader-lfs")
 local logger = require("logger")
 local Size = require("ui/size")
+local time = require("ui/time")
 local Screen = Device.screen
 
 -- 函数，或带 __call 的表，都算"可调用"
@@ -513,6 +514,7 @@ end
 --   budget     留给"已读完"列表的高度预算（可能为负 = 溢出）
 --   fin_row_h  "已读完"一行占多高
 --   truncated  四列小块里有没有哪一格被截断
+--   fin_hint_h "…更早还有 N 本"那行占多高
 local function layoutOnce(data, d, fin_data)
     local W, H = Screen:getWidth(), Screen:getHeight()
     -- 留白按屏幕"短边"的 6%，不能按 getWidth()：横屏时宽度是长边，
@@ -523,8 +525,7 @@ local function layoutOnce(data, d, fin_data)
     local usable = W - pad * 2
     local root = VerticalGroup:new{ align = "left" }
 
-    -- 区块之间的间距做成"弹性"的：先按基准值排版，最后把多出来的高度平摊回去。
-    -- 原来的做法是把剩余空间一股脑塞在末尾，内容全挤在屏幕上半部分。
+    -- 区块之间的间距做成"弹性"的：先按基准值排版，剩余高度在末尾统一分配（见下面的 slack 块）。
     local flex = {}
     local function gap(px)
         local w = Screen:scaleBySize(px)
@@ -591,12 +592,16 @@ local function layoutOnce(data, d, fin_data)
     local footer_h = (ok_f and fh) or Screen:scaleBySize(30)
     root:resetLayout()
     local used_h = root:getSize().h
-    -- 两个 12：一个是页脚上方的 gap(12)，一个是"已读完"列表和它上方标题之间的
-    -- 安全余量。都得从预算里扣，否则会顶出屏幕。
+    -- 两个 12：一个是页脚上方的 gap(12)；另一个没有对应元素，是纯保守余量，
+    -- 宁可"已读完"少放一行也不要顶出屏幕。
     local budget = avail_h - used_h - footer_h - Screen:scaleBySize(12) - Screen:scaleBySize(12)
     -- 一行"已读完"占多高：口径必须和 finishedRows 里的行高一致
     -- （同为辅助档 + Size.padding.large），否则 fit 循环会按错误的行高预留空间
     local fin_row_h = txt("2026-08", FACE_L()):getSize().h + Size.padding.large
+    -- 「…更早还有 N 本」那行的高度（辅助档，不带 line_gap——finishedRows 里它是
+    -- used + more:getSize().h <= budget_h，没有额外间距）。
+    -- 把它算进 fit 的门槛，否则列表一被截断这行提示就没地方画了。
+    local fin_hint_h = txt("…", FACE_S()):getSize().h
     table.insert(root, finishedRows(fin_data, usable, math.max(0, budget)))
 
     gap(12)
@@ -630,9 +635,9 @@ local function layoutOnce(data, d, fin_data)
             -- distributeSlack 的效果在正常藏书量下只有几像素，目测验不出来；
             -- 触顶数是关键信号：0/N 说明余白还没多到需要封顶，N/N 才是"已读完"接近空的情形
             local given, capped = 0, 0
-            for i, sp in ipairs(flex) do
+            for i = 1, #flex do
                 given = given + alloc.gains[i]
-                if alloc.gains[i] >= math.floor(sp._base * (CFG.gap_max_ratio - 1)) then
+                if alloc.limits[i] > 0 and alloc.gains[i] >= alloc.limits[i] then
                     capped = capped + 1
                 end
             end
@@ -652,7 +657,7 @@ local function layoutOnce(data, d, fin_data)
             root,
         },
     }
-    return widget, budget, fin_row_h, (cut1 or cut2)
+    return widget, budget, fin_row_h, (cut1 or cut2), fin_hint_h
 end
 
 -- 一屏排不下就整体降字号重排。KOReader 官方处理"铺满一屏"就是这个套路：
@@ -666,19 +671,29 @@ local function buildWidget()
     local d = Stats.derive(data, os.time(), CFG)
     -- 已读完列表也只读一次：loadCache 是 dofile，重排 8 轮就解析 8 遍，
     -- 而这跑在入睡路径上（同 collect 外提的理由）
-    local t0 = os.clock()
+    -- 计时用单调墙钟，不能用 os.clock()：后者是进程 CPU 时间，看不见阻塞 I/O，
+    -- 而 getFinished() 内部是 dofile 读缓存文件，主要成本恰恰是磁盘读。
+    -- 桌面有 page cache 所以无感，真机 eMMC 冷读时 os.clock() 会持续低估。
+    local t0 = time.now()
     local fin_data = getFinished()
 
     local widget, step, tries = Layout.fitScale(CFG.fscale_steps, function(k)
         FSCALE = k
-        local w, budget, fin_row_h, truncated = layoutOnce(data, d, fin_data)
-        local fits = (not truncated) and budget >= CFG.min_fin_rows * fin_row_h
+        local w, budget, fin_row_h, truncated, fin_hint_h = layoutOnce(data, d, fin_data)
+        -- 门槛里带上提示行的高度：列表被截断时末尾要画「…更早还有 N 本」，
+        -- 不预留就会被挤掉。代价是字号可能降一档，这是有意的取舍。
+        local need = CFG.min_fin_rows * fin_row_h + fin_hint_h
+        local fits = (not truncated) and budget >= need
         return fits, w
     end)
 
     if os.getenv("DENSESTATS_DEBUG") == "1" then
-        logger.info(string.format("densestats fit: FSCALE=%.2f tries=%d 耗时=%.1fms",
-            step or -1, tries or 0, (os.clock() - t0) * 1000))
+        -- fin= 是回归哨兵：只看别的数字的话，fin_data 没送到（传了 nil）时
+        -- 每个字段都会一字不差，这个回归模式完全是盲区。
+        -- nil 记 -1，好和"有缓存但列表为空"的 0 区分开。
+        logger.info(string.format("densestats fit: FSCALE=%.2f tries=%d fin=%d 耗时=%.1fms",
+            step or -1, tries or 0, fin_data and #(fin_data.titles or {}) or -1,
+            time.to_ms(time.since(t0))))
     end
     return widget
 end
