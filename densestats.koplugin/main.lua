@@ -383,9 +383,9 @@ local function cellRow(items, usable_w)
     return g, truncated
 end
 
--- 柱状曲线自绘：顺便画一条 1 小时参考虚线。
--- 纵轴刻度取 max(峰值, 1 小时)，这样读得少的时候参考线也在画面里。
-local CurveWidget = Widget:extend{ values = nil, w = 0, h = 0, scale = 3600, gap = 1 }
+-- 柱状曲线自绘：顺便画一条有效日均的参考虚线。
+-- 纵轴刻度取 max(峰值, 1 小时)——这个兜底防止读得少的时候柱子顶满整图。
+local CurveWidget = Widget:extend{ values = nil, w = 0, h = 0, scale = 3600, gap = 1, avg = 0 }
 
 function CurveWidget:getSize()
     return Geom:new{ w = self.w, h = self.h }
@@ -404,8 +404,12 @@ function CurveWidget:paintTo(bb, x, y)
         bb:paintRect(cx, y + self.h - h, w, h, Blitbuffer.COLOR_BLACK)
         cx = cx + w + gap
     end
-    -- 1 小时参考线：虚线，画满整宽
-    local ry = y + self.h - math.floor(self.h * 3600 / self.scale)
+    -- 有效日均参考线：虚线，画满整宽。原来这里画的是"1 小时"，那是个外部标准；
+    -- 换成日均之后它是读者自己的基准，一眼能看出这 30 天里哪些天超过了平均。
+    -- 日均为 0（没有任何记录）时不画，否则线会贴在底边和柱子根部糊在一起。
+    local avg = self.avg or 0
+    if avg <= 0 then return end
+    local ry = y + self.h - math.floor(self.h * avg / self.scale)
     local dash, step = Screen:scaleBySize(5), Screen:scaleBySize(10)
     local px = x
     while px < x + self.w do
@@ -415,18 +419,25 @@ function CurveWidget:paintTo(bb, x, y)
     end
 end
 
-local function curveWidget(curve, usable_w, avail_h)
+-- 第三个返回值 line_y 是日均虚线距曲线顶端的偏移，调用方拿它把左侧的时长标签
+-- 对齐到同一高度。
+local function curveWidget(curve, usable_w, avail_h, avg)
     local peak = 1
     for _, v in ipairs(curve) do if v > peak then peak = v end end
-    return CurveWidget:new{
+    avg = avg or 0
+    -- 按"内容区"的比例，不是按屏幕高度：横屏时两者差得远，
+    -- 占内容区 12% 才是本意（screensaver.lua:330-335 不会把本模式转成竖屏）
+    local h = math.floor(avail_h * 0.12)
+    local scale = math.max(peak, 3600)
+    local w = CurveWidget:new{
         values = curve,
         w = usable_w,
-        -- 按"内容区"的比例，不是按屏幕高度：横屏时两者差得远，
-        -- 占内容区 12% 才是本意（screensaver.lua:330-335 不会把本模式转成竖屏）
-        h = math.floor(avail_h * 0.12),
-        scale = math.max(peak, 3600),
+        h = h,
+        scale = scale,
         gap = Screen:scaleBySize(1),
-    }, peak
+        avg = avg,
+    }
+    return w, peak, h - math.floor(h * avg / scale)
 end
 
 local function currentBook(cur, usable_w)
@@ -562,20 +573,40 @@ local function layoutOnce(data, d, fin_data)
     table.insert(root, hrule(usable))
     gap(16)
 
+    -- 有效日均不再占一格：它画成了曲线上的参考线（见下）。腾出来的位置让
+    -- 累计、今日页数、本周页数各进一格，四列变成"天数 / 时长 / 页数 / 页数"。
+    -- 原来"今日页数"底下挂着"本周 N 页"的附注，四列里只有它有附注，看着是个疙瘩。
     local row2, cut2 = cellRow({
         { "连续天数", tostring(d.streak) },
-        { "有效日均", fmtHM(d.avg_active) },
         { "累计", fmtHM(d.total) },
-        { "今日页数", tostring(d.pages_today), string.format("本周 %d 页", d.pages_week) },
+        { "今日页数", tostring(d.pages_today) },
+        { "本周页数", tostring(d.pages_week) },
     }, usable)
     table.insert(root, row2)
     gap(22)
 
-    local curve, peak = curveWidget(d.curve, usable, avail_h)
+    -- 日均的时长标签摆在曲线左边、图外，与虚线同高。放图内会遮住最左边两三天的
+    -- 柱子；而放回格子里就只是个孤立数字，画成线才看得出哪些天超过了自己的平均。
+    local avg_label = txt(fmtHM(d.avg_active), FACE_L())
+    local avg_w = avg_label:getSize().w
+    local avg_gap = Screen:scaleBySize(8)
+    local curve, peak, line_y = curveWidget(d.curve, usable - avg_w - avg_gap,
+                                            avail_h, d.avg_active)
     table.insert(root, txt(string.format("最近 30 天 · 共 %s · 峰值 %s",
         fmtHM(d.curve_total), fmtHM(peak)), FACE_L()))
     gap(5)
-    table.insert(root, centered(usable, curve))
+    -- 标签垂直居中对齐到虚线，并夹在曲线高度范围内，免得日均极高或极低时跑出去
+    local label_h = avg_label:getSize().h
+    local label_top = math.max(0, math.min(curve:getSize().h - label_h,
+                                           line_y - math.floor(label_h / 2)))
+    table.insert(root, HorizontalGroup:new{ align = "top",
+        VerticalGroup:new{ align = "left",
+            VerticalSpan:new{ width = label_top },
+            avg_label,
+        },
+        HorizontalSpan:new{ width = avg_gap },
+        curve,
+    })
     gap(22)
     table.insert(root, centered(usable, hrule(usable)))
     gap(16)
