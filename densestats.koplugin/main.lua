@@ -511,7 +511,7 @@ end
 --   budget     留给"已读完"列表的高度预算（可能为负 = 溢出）
 --   fin_row_h  "已读完"一行占多高
 --   truncated  四列小块里有没有哪一格被截断
-local function layoutOnce(data, d)
+local function layoutOnce(data, d, fin_data)
     local W, H = Screen:getWidth(), Screen:getHeight()
     -- 留白按屏幕"短边"的 6%，不能按 getWidth()：横屏时宽度是长边，
     -- 按宽度取会白白吃掉本来就紧张的高度。下限用 KOReader 的
@@ -574,7 +574,6 @@ local function layoutOnce(data, d)
     end
 
     -- 已读完：先量此刻用掉多少高度，剩下的（扣掉页脚）全给它，装不下就截断
-    local fin_data = getFinished()
     local fin_title = "已读完"
     if fin_data and fin_data.total then
         fin_title = string.format("已读完 · 共 %d 本", fin_data.total)
@@ -636,11 +635,14 @@ local function buildWidget()
     local data = collect()
     if not data then return nil end
     local d = Stats.derive(data, os.time(), CFG)
+    -- 已读完列表也只读一次：loadCache 是 dofile，重排 8 轮就解析 8 遍，
+    -- 而这跑在入睡路径上（同 collect 外提的理由）
+    local fin_data = getFinished()
 
     local t0 = os.clock()
     local widget, step, tries = Layout.fitScale(CFG.fscale_steps, function(k)
         FSCALE = k
-        local w, budget, fin_row_h, truncated = layoutOnce(data, d)
+        local w, budget, fin_row_h, truncated = layoutOnce(data, d, fin_data)
         local fits = (not truncated) and budget >= CFG.min_fin_rows * fin_row_h
         return fits, w
     end)
