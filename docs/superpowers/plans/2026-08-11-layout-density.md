@@ -806,13 +806,227 @@ margins that vertically center the content."
 
 ---
 
+### Task 4b: 让间隙分配可观测（DEBUG 日志）
+
+Task 4 验收发现的计划缺陷：`distributeSlack` 是本计划里**唯一一个完全没有运行时信号**的机制
+（`fitScale` 至少有 `FSCALE=/tries=` 那行）。而按桌面实测参数推算，它的效果在正常藏书量下
+只有 7px 量级——上下边距 3px/4px，**肉眼不可辨**。原计划里「间隙明显变紧」「上下大致相等的
+空白」这两条目测标准因此是验不出来的，照着测只会误判成「改动没生效」。
+
+用户 2026-08-11 裁决：加一行 DEBUG 日志，不靠目测。
+
+顺带修掉 Task 3 验收提的度量口径问题：`t0 = os.clock()` 现在落在 `getFinished()` 之后，
+所以报出来的耗时不含那次 `dofile` 缓存解析，真机报告会低估完整构建成本。
+
+**Files:**
+- Modify: `densestats.koplugin/main.lua`（`layoutOnce` 的 slack 块、`buildWidget` 的计时起点）
+
+**Interfaces:**
+- Consumes: Task 4 的 `alloc`（`{ gains, top, bottom }`）
+- Produces: 无
+
+- [ ] **Step 1: 把计时起点挪到 `getFinished()` 之前**
+
+在 `buildWidget` 里，把 `local t0 = os.clock()` 移动到 `local fin_data = getFinished()`
+**之前**，使 `collect()` 之后的整个构建过程都在计时区内。只挪位置，不改别的。
+
+- [ ] **Step 2: 在 slack 块里打诊断日志**
+
+在 `layoutOnce` 的 slack 块里、`root:resetLayout()` **之后**，加：
+
+```lua
+        if os.getenv("DENSESTATS_DEBUG") == "1" then
+            -- distributeSlack 的效果在正常藏书量下只有几像素，目测验不出来；
+            -- 触顶数是关键信号：0/N 说明余白还没多到需要封顶，N/N 才是"已读完"接近空的情形
+            local given, capped = 0, 0
+            for i, sp in ipairs(flex) do
+                given = given + alloc.gains[i]
+                if alloc.gains[i] >= math.floor(sp._base * (CFG.gap_max_ratio - 1)) then
+                    capped = capped + 1
+                end
+            end
+            logger.info(string.format(
+                "densestats slack: rest=%d gains=%d 触顶=%d/%d top=%d bottom=%d",
+                avail_h - ch, given, capped, #flex, alloc.top, alloc.bottom))
+        end
+```
+
+- [ ] **Step 3: 语法检查**
+
+Run: `./dev.sh check`
+Expected: 五个文件全 `OK`，退出码 0。
+
+- [ ] **Step 4: 单元测试仍全绿**
+
+Run: `./dev.sh test`
+Expected: 三个测试文件全通过（21 / 56 / 19）。
+
+- [ ] **Step 5: 桌面预览，核对日志数字**
+
+Run: 后台启动 `DENSESTATS_DEBUG=1 DENSESTATS_AUTOSHOW=1 ./dev.sh run`，等约 25 秒，
+`pkill -f KOReader`，再 grep `/tmp/densestats-run.log`。
+
+Expected：出现 `densestats slack:` 行。在这台桌面机（1146×1596、FSCALE=1.20）上，
+验收模型推算的值是 `rest=37 gains=30 触顶=0/10 top=3 bottom=4`。
+**实测与推算若有出入，如实报出来并说明差异**——模型是手工复刻的，可能漏算某个 span，
+以实测为准，但差得离谱（比如 `rest` 是负数或几百）就要停下来查。
+
+- [ ] **Step 6: 造一次空列表场景对照**
+
+把缓存文件临时移走，再跑一次 Step 5：
+
+```bash
+D="$HOME/Library/Application Support/KOReader/settings"
+mv "$D/densestats_finished.lua" "$D/densestats_finished.lua.bak" 2>/dev/null || true
+# 跑 Step 5，记录日志
+mv "$D/densestats_finished.lua.bak" "$D/densestats_finished.lua" 2>/dev/null || true
+```
+
+Expected：`触顶` 应该变成 `10/10`，`top`/`bottom` 升到 25 左右。这证明封顶和居中两个分支
+都真的可达，而不是永远走不到的死代码。
+
+**缓存文件路径可能不在上面这个位置**（`DataStorage:getSettingsDir()` 决定）。找不到就
+先从日志或 `find` 定位；实在找不到就跳过本步，写进报告，不要反复试。**无论如何都要把
+文件恢复回去。**
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add densestats.koplugin/main.lua
+git commit -m "feat: log slack allocation under DENSESTATS_DEBUG
+
+distributeSlack was the only mechanism in this change with no runtime
+signal, and its effect is a few pixels at normal library sizes — too
+small to eyeball. The cap count is the useful one: 0/N means there was
+never enough leftover to cap, N/N is the near-empty finished list.
+Also moves the fit timer above getFinished so the reported cost covers
+the whole build."
+```
+
+---
+
+### Task 4c: 「已读完」列表降到辅助档
+
+用户看桌面预览后指出：「已读完」列表的字大得出奇。属实——`finishedRows` 里日期和书名都用
+`FACE_M()`，与当前在读的书名**同一档**。一份三本书的归档清单，视觉重量和整屏唯一的焦点一样重。
+
+根源是 FACE_* 上方那条角色规则：「正文 给书名、日期这类主体内容」。它把「书名」当成一类，
+没区分**当前在读的那本**（焦点）和**历史清单里的条目**（参考信息）。这是 spec 的设计错误。
+
+修正后的规则：正文档只给当前在读的书名；「已读完」清单与「5% · 19/468 页 · 累计 0.0h」
+同属参考信息，用辅助档。
+
+**Files:**
+- Modify: `densestats.koplugin/main.lua`（FACE_* 上方注释、`finishedRows`、`layoutOnce` 的 `fin_row_h`）
+
+**Interfaces:**
+- Consumes: 无
+- Produces: 无
+
+⚠️ **关键连锁点**：`fin_row_h` 参与 fit 循环的接受条件
+（`budget >= CFG.min_fin_rows * fin_row_h`）。它和 `finishedRows` 内部的行高**必须同档**，
+否则 fit 循环会按错误的行高预留空间。所以下面四处 `FACE_M()` 必须**一起**改成 `FACE_L()`，
+漏掉任何一处都会让两边口径分叉。
+
+- [ ] **Step 1: 改 `finishedRows` 里的三处**
+
+在 `finishedRows` 中：
+
+```lua
+    local probe = txt("2026-08", FACE_M())
+```
+→
+```lua
+    local probe = txt("2026-08", FACE_L())
+```
+
+```lua
+        local dw = txt(t.label, FACE_M(), date_w)
+        local tw = txt(t.title or "", FACE_M(), usable_w - date_w - gap_w)
+```
+→
+```lua
+        local dw = txt(t.label, FACE_L(), date_w)
+        local tw = txt(t.title or "", FACE_L(), usable_w - date_w - gap_w)
+```
+
+空列表分支的 `txt("—", FACE_L(), usable_w)` 和末尾的
+`txt(..., FACE_S(), usable_w)` 本来就是辅助档，**不用改**。
+
+- [ ] **Step 2: 改 `layoutOnce` 里的 `fin_row_h`，口径跟上**
+
+```lua
+    local fin_row_h = txt("2026-08", FACE_M()):getSize().h + Size.padding.large
+```
+→
+```lua
+    -- 口径必须和 finishedRows 里的行高一致（同为辅助档 + Size.padding.large），
+    -- 否则 fit 循环会按错误的行高预留空间
+    local fin_row_h = txt("2026-08", FACE_L()):getSize().h + Size.padding.large
+```
+
+- [ ] **Step 3: 更新 FACE_* 上方的角色规则注释**
+
+把注释里这两行：
+
+```lua
+--   强调 只给统计大数字；正文 给书名、日期这类主体内容；
+--   辅助 给标签、说明、明细、页脚。
+```
+
+改成：
+
+```lua
+--   强调 只给统计大数字；
+--   正文 只给"当前在读"的书名——它是整屏唯一的焦点；
+--   辅助 给标签、说明、明细、页脚，以及"已读完"清单
+--        （那是归档参考，不该和焦点抢视觉重量）。
+```
+
+- [ ] **Step 4: 语法检查**
+
+Run: `./dev.sh check`
+Expected: 五个文件全 `OK`，退出码 0。
+
+- [ ] **Step 5: 单元测试仍全绿**
+
+Run: `./dev.sh test`
+Expected: 三个测试文件全通过（21 / 56 / 19）。
+
+- [ ] **Step 6: 桌面预览，核对连锁效果**
+
+Run: 后台启动 `DENSESTATS_DEBUG=1 DENSESTATS_AUTOSHOW=1 ./dev.sh run`，等约 25 秒，
+`pkill -f KOReader`，再 grep `/tmp/densestats-run.log`。
+
+Expected（**这几项都会变，如实报出来**）：
+1. 行变矮 → `fin_row_h` 变小 → 接受门槛 `2 * fin_row_h` 变低 → **`FSCALE` 可能升到 1.30、
+   `tries` 可能变成 1**。这是预期的连锁反应，不是 bug——字号变大和书单变长同时发生。
+2. `densestats slack:` 那行的 `rest` 会变（行矮了，「已读完」块可能多放一行，也可能因此
+   `rest` 反而变小）。
+3. 预览里「已读完」的条目应该和「5% · 19/468 页」一样大，明显小于书名。
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add densestats.koplugin/main.lua
+git commit -m "style: demote the finished-books list to the auxiliary tier
+
+The list shared the body tier with the currently-reading book title, so
+a three-book archive carried the same visual weight as the screen's only
+focal point. The role rule lumped all book titles together; split it so
+the body tier means the current book and nothing else. fin_row_h moves
+with it — it feeds the fit loop's acceptance test and the two must agree."
+```
+
+---
+
 ### Task 5: 真机（PW3）验证
 
 **Files:**
 - Modify: `README.md`（「已知待验证点」小节）
 
 **Interfaces:**
-- Consumes: Task 2/3/4 的全部改动
+- Consumes: Task 2/3/4/4b 的全部改动
 - Produces: 无
 
 这一步**不可省**。计划里所有定量结论都来自源码复刻的模型，不是实测。
@@ -830,31 +1044,33 @@ Expected：
 1. 第一排「今日 / 本周 / 本月 / 今年」四列不换行、不截断
 2. 第二排「连续天数 / 有效日均 / 累计 / 今日页数」四列不换行、不截断
 3. 字号明显比改动前大
-4. 内容块整体垂直居中，上下空白大致相等
-5. 页脚完整可见
-6. 「已读完」至少 2 行
+4. 页脚完整可见
+5. 「已读完」至少 2 行
 
-- [ ] **Step 3: 横屏睡眠（本次的主要保障，必测）**
+**不要目测「垂直居中」和「间隙变紧」**——按 Task 4 验收的推算，正常藏书量下上下边距只有
+3px/4px、间隙总共只紧了 7px，肉眼不可辨。这两项改看 Task 4b 加的 `densestats slack:` 日志。
 
-把设备转成横屏，再次进入睡眠。
+- [ ] **Step 3: 横屏——不测（用户决定，2026-08-11）**
 
-Expected：内容不溢出屏幕，页脚仍然完整可见。字号会比竖屏小——这是 fit 循环
-自动降档的正常结果，不是 bug。
+用户明确表示不考虑横屏，本计划不做横屏验证。
 
-改动前这里是溢出的（按模型 PW3 横屏溢出 82px，页脚看不见），所以这一步既是
-验证也是回归对比。
+Task 2 已提交的方向无关改动（留白按短边、曲线按内容区高度）保留不动：竖屏下
+`math.min(W, H)` 就等于 `W`，行为与改前一致，无害。fit 循环也保留——它的价值
+不止横屏，还覆盖用户调「屏幕 DPI」和内容变长这两种会溢出的情形，并且它就是
+「字号能放多大」这个问题的答案本身。
 
 - [ ] **Step 4: 抓 fit 循环日志**
 
 设备上装了 SSH 插件的话 `tail -f koreader/crash.log`，否则重启后直接看该文件。
-找 `densestats fit:` 那一行，记录竖屏和横屏各自选中的 FSCALE、tries、耗时。
+找 `densestats fit:` 和 `densestats slack:` 两行，记录竖屏下选中的 FSCALE、tries、耗时，
+以及 slack 的 rest / gains / 触顶 / top / bottom。
 
 **若耗时超过 200ms**：记进 README，并在汇报里明确指出——spec 说届时需要改成
 解析式预估高度，那是后续任务，不在本计划内。
 
 - [ ] **Step 5: 出问题时的退路**
 
-- 两排四列仍被截断 → 把 `CFG.fscale_steps` 的起点从 1.30 降到 1.20，重跑 Step 1-3
+- 两排四列仍被截断 → 把 `CFG.fscale_steps` 的起点从 1.30 降到 1.20，重跑 Step 1-2
 - 「已读完」一行都放不下 → 检查 `CFG.min_fin_rows` 是否真的生效（看日志里的 FSCALE 有没有降）
 - 整屏退回内置屏保 → 十有八九是 `layout.lua` 没拷过去，看 crash.log 里的
   `module 'layout' not found`
@@ -863,14 +1079,15 @@ Expected：内容不溢出屏幕，页脚仍然完整可见。字号会比竖屏
 
 - [ ] **Step 6: 更新 README 的验证记录**
 
-在 `README.md` 的「已知待验证点」小节末尾追加记录：设备型号、竖屏/横屏各自选中的
-FSCALE、fit 循环耗时、本次实际验证过的项。保持该小节现有的编号/格式风格。
+在 `README.md` 的「已知待验证点」小节末尾追加记录：设备型号、竖屏下选中的
+FSCALE、fit 循环耗时、本次实际验证过的项。**明确写上横屏未验证**。
+保持该小节现有的编号/格式风格。
 
 - [ ] **Step 7: Commit**
 
 ```bash
 git add README.md
-git commit -m "docs: record PW3 portrait and landscape verification"
+git commit -m "docs: record PW3 portrait verification"
 ```
 
 ---
@@ -880,5 +1097,5 @@ git commit -m "docs: record PW3 portrait and landscape verification"
 - `./dev.sh check` 五个文件全 OK
 - `./dev.sh test` 三个测试文件全绿（`test_layout.lua` 19 passed）
 - PW3 **竖屏**：两排四列不截断，内容垂直居中，页脚可见，「已读完」≥ 2 行
-- PW3 **横屏**：不溢出，页脚可见
+- 横屏不在本计划范围内（用户决定）
 - fit 循环耗时已实测并记录在 README

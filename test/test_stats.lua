@@ -16,7 +16,15 @@ ok(S.fmtHM(3600) == "1h00", "整一小时补零", S.fmtHM(3600))
 ok(S.fmtHM(3661) == "1h01", "1 小时 1 分", S.fmtHM(3661))
 ok(S.fmtHM(nil) == "0m", "nil 不炸", S.fmtHM(nil))
 ok(S.fmtHM(-5) == "0m", "负数按 0", S.fmtHM(-5))
-ok(S.fmtHours(5375) == "1.5h", "小时保留一位", S.fmtHours(5375))
+-- 10 小时以上去掉分钟：h02 那种零填充在大数上会被读成小数（10h02 像 10.02），
+-- 而且读了十几个小时之后，分钟已经是噪音。
+ok(S.fmtHM(9 * 3600 + 3540) == "9h59", "9h59 仍带分钟", S.fmtHM(9 * 3600 + 3540))
+ok(S.fmtHM(10 * 3600) == "10h", "满 10 小时起只给整小时", S.fmtHM(10 * 3600))
+ok(S.fmtHM(10 * 3600 + 120) == "10h", "10 小时以上丢弃分钟", S.fmtHM(10 * 3600 + 120))
+ok(S.fmtHM(1234 * 3600 + 3360) == "1234h", "四位数小时", S.fmtHM(1234 * 3600 + 3360))
+-- 截断而不是四舍五入：宁可少报，也不要把没读的时间算进去
+ok(S.fmtHM(11 * 3600 + 3599) == "11h", "接近整点也不进位", S.fmtHM(11 * 3600 + 3599))
+ok(S.fmtHours == nil, "fmtHours 已从 stats 移除", tostring(S.fmtHours))
 
 print("== rowsOf ==")
 ok(#S.rowsOf(nil, 2) == 0, "nil 结果返回空表")

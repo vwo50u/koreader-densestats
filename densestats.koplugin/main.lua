@@ -30,12 +30,14 @@ local UIManager = require("ui/uimanager")
 local VerticalGroup = require("ui/widget/verticalgroup")
 local VerticalSpan = require("ui/widget/verticalspan")
 local WidgetContainer = require("ui/widget/container/widgetcontainer")
+local Layout = require("layout")
 local Finished = require("finished")
 local Stats = require("stats")
 local Widget = require("ui/widget/widget")
 local lfs = require("libs/libkoreader-lfs")
 local logger = require("logger")
 local Size = require("ui/size")
+local time = require("ui/time")
 local Screen = Device.screen
 
 -- 函数，或带 __call 的表，都算"可调用"
@@ -57,6 +59,11 @@ local CFG = {
     finished_cache_hours = 12,  -- sidecar 扫描结果缓存时长
     cache_titles = 60,          -- 缓存里最多保留多少本书名（渲染时要整份解析）
     tz_offset = 0,              -- start_time 与设备墙钟一致，真机上为 0；设 nil 则自动推断
+    -- 字号自适应：从大到小试，第一个"放得下"的档位胜出。
+    -- 放不下的判据见 layoutOnce 的返回值（截断 / 已读完行数）。
+    fscale_steps = { 1.30, 1.20, 1.10, 1.00, 0.90, 0.80, 0.70, 0.60 },
+    min_fin_rows = 2,           -- "已读完"至少要放得下几行，否则降档
+    gap_max_ratio = 1.6,        -- 区块间隙最多长到基准值的几倍，吸收不掉的归上下边距
 }
 -- =================================================================
 
@@ -74,7 +81,7 @@ local function tzOffset()
     return math.floor(os.difftime(now, os.time(u)))
 end
 
-local fmtHM, fmtHours, rowsOf = Stats.fmtHM, Stats.fmtHours, Stats.rowsOf
+local fmtHM, rowsOf = Stats.fmtHM, Stats.rowsOf
 
 -- ============================ 取数 ============================
 
@@ -259,16 +266,31 @@ end
 
 -- ============================ 画面 ============================
 
--- 字号一律用 KOReader 的命名档位（font.lua 的 sizemap），不写死数字：
--- getFace 内部按屏幕 DPI 做 scaleBySize，档位本身也跟着 KOReader 的字号体系走。
--- 官方 readerprogress.lua 就是这么干的（smallffont / ffont / largeffont）。
--- 只用 KOReader 的三档字号，且按"角色"固定分配，同一角色全篇一致：
---   强调(25) 只给统计大数字；正文(20) 给书名、日期这类主体内容；
---   辅助(15) 给标签、说明、明细、页脚。
+-- 三档字号 = KOReader 命名档位的原始设计尺寸（font.lua:90-92 的 sizemap）
+-- × 一个自适应系数 FSCALE，由 buildWidget 的 fit 循环设定。
+--
+-- getFace 的第二个参数是"未缩放的设计尺寸"，内部还会做 Screen:scaleBySize
+-- （font.lua:269-277），而 scaleBySize 是按屏幕短边 / 600 缩放、默认完全不看 DPI
+-- （ffi/framebuffer.lua:414-425）。所以这里写的不是像素，跨分辨率自动成立；
+-- FSCALE 只负责回答"这一屏内容在这台设备的这个方向上放不放得下"。
+-- 写死一组数字的问题不在跨分辨率（那是 scaleBySize 的事），而在于横屏、
+-- 用户把「屏幕 DPI」调大、以及内容变长时没有退路。
+--
+-- 仍然只用三档，且按"角色"固定分配，同一角色全篇一致：
+--   强调 只给统计大数字；
+--   正文 只给"当前在读"的书名——它是整屏唯一的焦点；
+--   辅助 给标签、说明、明细、页脚，以及"已读完"清单
+--        （那是归档参考，不该和焦点抢视觉重量）。
 -- 之前是哪里觉得不合适就单独调一处，屏幕上同时出现四五种大小，看着就乱。
-local function FACE_V() return Font:getFace("largeffont") end    -- 25 强调
-local function FACE_M() return Font:getFace("ffont") end         -- 20 正文
-local function FACE_L() return Font:getFace("smallffont") end    -- 15 辅助
+local BASE_V, BASE_M, BASE_L = 25, 20, 15   -- largeffont / ffont / smallffont
+local FSCALE = 1.0
+
+local function scaled(base)
+    return math.max(8, math.floor(base * FSCALE + 0.5))
+end
+local function FACE_V() return Font:getFace("largeffont", scaled(BASE_V)) end
+local function FACE_M() return Font:getFace("ffont",      scaled(BASE_M)) end
+local function FACE_L() return Font:getFace("smallffont", scaled(BASE_L)) end
 local FACE_S = FACE_L
 
 local function txt(s, face, max_width)
@@ -298,11 +320,12 @@ local function hrule(w)
     }
 end
 
--- 小块内部一律左对齐：标签、数值、附注共用左边缘，
--- 位数变化只往右长，数字不会左右晃。小块本身也由 cellRow 靠左摆放。
+-- 小块内部居中：标签与数值共用中轴，短标签配长数值时不会一头沉。
+-- 这里曾经是左对齐，理由是"位数变化只往右长，数字不会左右晃"——
+-- 但这是睡眠屏，一次渲染就静止在那儿，看不到位数变化的过程，那条理由不成立。
 local function cell(label, value, col_w, extra)
     local g = VerticalGroup:new{
-        align = "left",
+        align = "center",
         txt(label, FACE_L(), col_w),
         VerticalSpan:new{ width = Size.span.vertical_large },
         txt(value, FACE_V(), col_w),
@@ -314,48 +337,57 @@ local function cell(label, value, col_w, extra)
     return g
 end
 
--- 一排小块：两端对齐。第一块贴左边缘、最后一块贴右边缘，中间按剩余空间均分。
--- 之前是"等宽列 + 每列左对齐"，最后一列的字只占列宽的一小截，
--- 右边就空出一大块，看起来像左右边距不一样。
+-- 一排小块：等宽列，每列居中。列宽只由 usable_w 和列数决定，与内容无关，
+-- 所以上下两排的列边界完全一致，块与块自然对齐成网格。
+--
+-- 这里的历史值得留一句：最早是"等宽列 + 列内左对齐"，末列的字只占列宽一小截、
+-- 右边空出一大块，看着像左右边距不等；于是改成了"两端对齐 + 按实测宽度均分"。
+-- 那修掉了边距问题，却让两排的块宽不同、中间几块上下对不齐。
+-- 病根其实在左对齐——它让首列贴死左边而末列悬在中间。居中之后首列左边也有留白，
+-- 整排左右对称，等宽列才立得住，两个毛病一起消失。
 local function cellRow(items, usable_w)
     local n = #items
-    if n == 0 then return VerticalGroup:new{} end
-    local cap_w = math.floor(usable_w / n)          -- 单块最大宽度，超了就截断
-    local cells, widths, total = {}, {}, 0
-    for i, it in ipairs(items) do
-        local c = cell(it[1], it[2], cap_w, it[3])
-        cells[i] = c
-        local ok, sz = pcall(function() return c:getSize() end)
-        widths[i] = (ok and sz and sz.w) or 0
-        total = total + widths[i]
-    end
-
+    if n == 0 then return VerticalGroup:new{}, false end
+    local col_w = math.floor(usable_w / n)          -- 列宽，也是单块最大宽度（超了截断）
+    local truncated = false
     local g = HorizontalGroup:new{ align = "top" }
-    if n == 1 then
-        table.insert(g, cells[1])
-        return g
-    end
-    local space = usable_w - total
-    local gap_w = math.floor(space / (n - 1))
-    local extra = space - gap_w * (n - 1)           -- 除不尽的余数塞进最后一个间隙
-    if gap_w < 0 then gap_w, extra = 0, 0 end       -- 内容撑满时退化为紧挨着
-    for i, c in ipairs(cells) do
-        table.insert(g, c)
-        if i < n then
-            table.insert(g, HorizontalSpan:new{
-                width = gap_w + (i == n - 1 and extra or 0),
-            })
+    for i, it in ipairs(items) do
+        local c = cell(it[1], it[2], col_w, it[3])
+        local ok, sz = pcall(function() return c:getSize() end)
+        -- 有没有哪一格被 col_w 截成 "1234h5…"。isTruncated 走的是真实排版
+        -- （含 kerning 和 CJK 回退字体），比自己量宽度可靠（textwidget.lua:307-310）。
+        -- 截了就让外层的 fit 循环降一档字号重排：FSCALE 变小而 col_w 不变，
+        -- 所以截断是单调消失的，循环必然收敛。
+        for _, w in ipairs(c) do
+            if type(w) == "table" and type(w.isTruncated) == "function" then
+                local ok_t, cut = pcall(function() return w:isTruncated() end)
+                if ok_t and cut then truncated = true end
+            end
         end
+        -- 除不尽的余数补给末列，整排才正好占满 usable_w，不会窄几个像素
+        table.insert(g, CenterContainer:new{
+            dimen = Geom:new{
+                w = col_w + (i == n and (usable_w - col_w * n) or 0),
+                h = (ok and sz and sz.h) or 0,
+            },
+            c,
+        })
     end
-    return g
+    return g, truncated
 end
 
--- 柱状曲线自绘：顺便画一条 1 小时参考虚线。
--- 纵轴刻度取 max(峰值, 1 小时)，这样读得少的时候参考线也在画面里。
-local CurveWidget = Widget:extend{ values = nil, w = 0, h = 0, scale = 3600, gap = 1 }
+-- 柱状曲线自绘：顺便画一条有效日均的参考虚线。
+-- 纵轴刻度取 max(峰值, 1 小时)——这个兜底防止读得少的时候柱子顶满整图。
+local CurveWidget = Widget:extend{ values = nil, w = 0, h = 0, scale = 3600, gap = 1, avg = 0 }
 
 function CurveWidget:getSize()
     return Geom:new{ w = self.w, h = self.h }
+end
+
+-- 日均虚线距曲线顶端的偏移。paintTo 和外面摆标签的地方都要它，
+-- 所以只在这里算一次——两边各写一份表达式，改一处漏一处就会错位。
+function CurveWidget:lineOffset()
+    return self.h - math.floor(self.h * (self.avg or 0) / self.scale)
 end
 
 function CurveWidget:paintTo(bb, x, y)
@@ -371,8 +403,11 @@ function CurveWidget:paintTo(bb, x, y)
         bb:paintRect(cx, y + self.h - h, w, h, Blitbuffer.COLOR_BLACK)
         cx = cx + w + gap
     end
-    -- 1 小时参考线：虚线，画满整宽
-    local ry = y + self.h - math.floor(self.h * 3600 / self.scale)
+    -- 有效日均参考线：虚线，画满整宽。原来这里画的是"1 小时"，那是个外部标准；
+    -- 换成日均之后它是读者自己的基准，一眼能看出这 30 天里哪些天超过了平均。
+    -- 日均为 0（没有任何记录）时不画，否则线会贴在底边和柱子根部糊在一起。
+    if (self.avg or 0) <= 0 then return end
+    local ry = y + self:lineOffset()
     local dash, step = Screen:scaleBySize(5), Screen:scaleBySize(10)
     local px = x
     while px < x + self.w do
@@ -382,16 +417,30 @@ function CurveWidget:paintTo(bb, x, y)
     end
 end
 
-local function curveWidget(curve, usable_w)
+-- 第三个返回值 line_y 是日均虚线距曲线顶端的偏移，调用方拿它把左侧的时长标签
+-- 对齐到同一高度。
+local function curveWidget(curve, usable_w, avail_h, avg)
     local peak = 1
     for _, v in ipairs(curve) do if v > peak then peak = v end end
-    return CurveWidget:new{
+    avg = avg or 0
+    -- 按"内容区"的比例，不是按屏幕高度：横屏时两者差得远，
+    -- 占内容区 12% 才是本意（screensaver.lua:330-335 不会把本模式转成竖屏）
+    local h = math.floor(avail_h * 0.12)
+    -- avg 必须进刻度。它是"终身"日均（stats.lua 用 book 表全量汇总算的），
+    -- 而 peak 只是最近 30 天的单日峰值——两个窗口不同。只要这 30 天比平时清淡
+    -- （放假、忙、生病），avg 就会超过 peak，虚线被算到曲线框外、横穿上方的标题。
+    -- 纳入之后 lineOffset() ∈ [0, h] 恒成立；副作用是柱子整体压低、虚线贴顶，
+    -- 而那正是"这 30 天没有一天达到我的平均水平"的正确表达。
+    local scale = math.max(peak, avg, 3600)
+    local w = CurveWidget:new{
         values = curve,
         w = usable_w,
-        h = math.floor(Screen:getHeight() * 0.10),   -- 曲线高度按屏幕比例，跨设备一致
-        scale = math.max(peak, 3600),
+        h = h,
+        scale = scale,
         gap = Screen:scaleBySize(1),
-    }, peak
+        avg = avg,
+    }
+    return w, peak, w:lineOffset()
 end
 
 local function currentBook(cur, usable_w)
@@ -407,7 +456,7 @@ local function currentBook(cur, usable_w)
     local bar_w = usable_w
     local fill = math.max(2, math.floor(bar_w * math.min(cur.frac, 1)))
     table.insert(g, HorizontalGroup:new{ align = "center",
-        rect(fill, Screen:scaleBySize(10)),
+        rect(fill, Screen:scaleBySize(14)),   -- 与官方 readerprogress.lua:262 一致
         HorizontalSpan:new{ width = 1 },
     })
     table.insert(g, VerticalSpan:new{ width = Size.padding.default })
@@ -416,9 +465,9 @@ local function currentBook(cur, usable_w)
     local line
     if cur.pages > 0 then
         line = string.format("%d%%  ·  %d / %d 页  ·  累计 %s",
-            math.floor(cur.frac * 100 + 0.5), cur.page, cur.pages, fmtHours(cur.sec))
+            math.floor(cur.frac * 100 + 0.5), cur.page, cur.pages, fmtHM(cur.sec))
     else
-        line = string.format("累计 %s", fmtHours(cur.sec))
+        line = string.format("累计 %s", fmtHM(cur.sec))
     end
     table.insert(g, txt(line, FACE_L(), usable_w))
     return g
@@ -437,17 +486,18 @@ local function finishedRows(fin_data, usable_w, budget_h)
     local items = Stats.groupFinished(list)
 
     -- 日期列宽按真实文字宽度量，写死的话字号一变就会被截成 "2026-..."
-    local probe = txt("2026-08", FACE_M())
+    local probe = txt("2026-08", FACE_L())
     local ok_p, psz = pcall(function() return probe:getSize() end)
     local date_w = ((ok_p and psz and psz.w) or Screen:scaleBySize(80))
                    + Screen:scaleBySize(6)
     local gap_w = Screen:scaleBySize(14)
     local line_gap = Size.padding.large
-    local used, shown = 0, 0
-
+    -- 装得下几行放几行，装不下就截断，末尾不再提示"还有 N 本"——
+    -- 区块标题那行的"已读完 · 共 N 本"已经给出了总数，提示行是重复信息。
+    local used = 0
     for _, t in ipairs(items) do
-        local dw = txt(t.label, FACE_M(), date_w)
-        local tw = txt(t.title or "", FACE_M(), usable_w - date_w - gap_w)
+        local dw = txt(t.label, FACE_L(), date_w)
+        local tw = txt(t.title or "", FACE_L(), usable_w - date_w - gap_w)
         local h = math.max(dw:getSize().h, tw:getSize().h)
         if used + h + line_gap > budget_h then break end
         table.insert(g, HorizontalGroup:new{ align = "center",
@@ -456,12 +506,6 @@ local function finishedRows(fin_data, usable_w, budget_h)
             tw })
         table.insert(g, VerticalSpan:new{ width = line_gap })
         used = used + h + line_gap
-        shown = shown + 1
-    end
-
-    if shown < #items then
-        local more = txt(string.format("…更早还有 %d 本", #items - shown), FACE_S(), usable_w)
-        if used + more:getSize().h <= budget_h then table.insert(g, more) end
     end
     return g
 end
@@ -474,50 +518,84 @@ local function footerRow(usable_w)
     return centered(usable_w, txt(os.date("%Y-%m-%d %H:%M") .. batt, FACE_S()))
 end
 
-local function buildWidget()
-    local data = collect()
-    if not data then return nil end
-    local d = Stats.derive(data, os.time(), CFG)
-
-    -- 左右留白按屏幕宽度取比例。原来用 scaleBySize(16)，在 300 DPI 的设备上
-    -- 只有 4% 宽，贴边很难看；原生那套观感更宽松，这里取 6%（并给个下限）。
-    -- 下限用 KOReader 的 Size.padding.fullscreen（原生屏保就是这个值，约屏宽 3.7%），
-    -- 正常情况取屏宽 6%，比原生宽一些。
-    local pad = math.max(Size.padding.fullscreen, math.floor(Screen:getWidth() * 0.06))
+-- 按当前的 FSCALE 排一遍版。返回值供 fit 循环判断"放不放得下"：
+--   widget     排好的部件
+--   budget     留给"已读完"列表的高度预算（可能为负 = 溢出）
+--   fin_row_h  "已读完"一行占多高
+--   truncated  四列小块里有没有哪一格被截断
+local function layoutOnce(data, d, fin_data)
     local W, H = Screen:getWidth(), Screen:getHeight()
+    -- 留白按屏幕"短边"的 6%，不能按 getWidth()：横屏时宽度是长边，
+    -- 按宽度取会白白吃掉本来就紧张的高度。下限用 KOReader 的
+    -- Size.padding.fullscreen（原生全屏 widget 就是这个值，readerprogress.lua:30）。
+    local pad = math.max(Size.padding.fullscreen, math.floor(math.min(W, H) * 0.06))
+    local avail_h = H - pad * 2          -- 内容区高度：曲线、预算、余白分配共用同一个口径
     local usable = W - pad * 2
     local root = VerticalGroup:new{ align = "left" }
 
-    -- 区块之间的间距做成"弹性"的：先按基准值排版，最后把多出来的高度平摊回去。
-    -- 原来的做法是把剩余空间一股脑塞在末尾，内容全挤在屏幕上半部分。
+    -- 区块之间的间距做成"弹性"的：先按基准值排版，剩余高度在末尾统一分配（见下面的 slack 块）。
     local flex = {}
     local function gap(px)
-        local sp = VerticalSpan:new{ width = Screen:scaleBySize(px) }
+        local w = Screen:scaleBySize(px)
+        local sp = VerticalSpan:new{ width = w }
+        sp._base = w            -- 记下基准值：余白按基准比例分，不是均分
         flex[#flex + 1] = sp
         table.insert(root, sp)
     end
 
-    table.insert(root, cellRow({
+    local row1, cut1 = cellRow({
         { "今日", fmtHM(d.today) }, { "本周", fmtHM(d.week) },
         { "本月", fmtHM(d.month) }, { "今年", fmtHM(d.year) },
-    }, usable))
+    }, usable)
+    table.insert(root, row1)
     gap(16)
     table.insert(root, hrule(usable))
     gap(16)
 
-    table.insert(root, cellRow({
+    -- 有效日均不再占一格：它画成了曲线上的参考线（见下）。腾出来的位置让
+    -- 累计、今日页数、本周页数各进一格，四列变成"天数 / 时长 / 页数 / 页数"。
+    -- 原来"今日页数"底下挂着"本周 N 页"的附注，四列里只有它有附注，看着是个疙瘩。
+    -- 标签一律"2 字限定词 + 2 字单位名"，这一排内部字数才齐。上一排是纯时间段、
+    -- 值全是时长，不需要单位名，所以维持 2 字——两排各自统一，中间隔着分隔线。
+    -- 不把这排压成 2 字是因为"今日页数"只能叫"今日"，会和上一排的"今日"撞名。
+    local row2, cut2 = cellRow({
         { "连续天数", tostring(d.streak) },
-        { "有效日均", fmtHM(d.avg_active) },
-        { "累计", fmtHours(d.total) },
-        { "今日页数", tostring(d.pages_today), string.format("本周 %d 页", d.pages_week) },
-    }, usable))
+        { "累计时长", fmtHM(d.total) },
+        { "今日页数", tostring(d.pages_today) },
+        { "本周页数", tostring(d.pages_week) },
+    }, usable)
+    table.insert(root, row2)
     gap(22)
 
-    local curve, peak = curveWidget(d.curve, usable)
+    -- 日均的时长标签摆在曲线左边、图外，与虚线同高。放图内会遮住最左边两三天的
+    -- 柱子；而放回格子里就只是个孤立数字，画成线才看得出哪些天超过了自己的平均。
+    -- 日均为 0（全新安装、一条记录都没有）时不画参考线，标签也别摆——
+    -- 否则会出现一个指向虚空的"0m"。这种情况下曲线占满整宽。
+    local avg_label = d.avg_active > 0 and txt(fmtHM(d.avg_active), FACE_L()) or nil
+    local avg_gap = avg_label and Screen:scaleBySize(8) or 0
+    local avg_w = avg_label and avg_label:getSize().w or 0
+    local curve, peak, line_y = curveWidget(d.curve, usable - avg_w - avg_gap,
+                                            avail_h, d.avg_active)
     table.insert(root, txt(string.format("最近 30 天 · 共 %s · 峰值 %s",
         fmtHM(d.curve_total), fmtHM(peak)), FACE_L()))
     gap(5)
-    table.insert(root, centered(usable, curve))
+    if avg_label then
+        -- 标签垂直居中对齐到虚线，并夹在曲线高度范围内。刻度已经把 avg 纳入
+        -- （见 curveWidget），line_y 不会越界，这层钳位只兜极端字号下的取整误差。
+        local label_h = avg_label:getSize().h
+        local label_top = math.max(0, math.min(curve:getSize().h - label_h,
+                                               line_y - math.floor(label_h / 2)))
+        table.insert(root, HorizontalGroup:new{ align = "top",
+            VerticalGroup:new{ align = "left",
+                VerticalSpan:new{ width = label_top },
+                avg_label,
+            },
+            HorizontalSpan:new{ width = avg_gap },
+            curve,
+        })
+    else
+        table.insert(root, centered(usable, curve))
+    end
     gap(22)
     table.insert(root, centered(usable, hrule(usable)))
     gap(16)
@@ -540,7 +618,6 @@ local function buildWidget()
     end
 
     -- 已读完：先量此刻用掉多少高度，剩下的（扣掉页脚）全给它，装不下就截断
-    local fin_data = getFinished()
     local fin_title = "已读完"
     if fin_data and fin_data.total then
         fin_title = string.format("已读完 · 共 %d 本", fin_data.total)
@@ -553,31 +630,58 @@ local function buildWidget()
     local footer_h = (ok_f and fh) or Screen:scaleBySize(30)
     root:resetLayout()
     local used_h = root:getSize().h
-    -- 12 是页脚上方的间距，也得从预算里扣，否则会顶出屏幕
-    local budget = H - pad * 2 - used_h - footer_h - Screen:scaleBySize(12) - Screen:scaleBySize(12)
+    -- 两个 12：一个是页脚上方的 gap(12)；另一个没有对应元素，是纯保守余量，
+    -- 宁可"已读完"少放一行也不要顶出屏幕。
+    local budget = avail_h - used_h - footer_h - Screen:scaleBySize(12) - Screen:scaleBySize(12)
+    -- 一行"已读完"占多高：口径必须和 finishedRows 里的行高一致
+    -- （同为辅助档 + Size.padding.large），否则 fit 循环会按错误的行高预留空间
+    local fin_row_h = txt("2026-08", FACE_L()):getSize().h + Size.padding.large
     table.insert(root, finishedRows(fin_data, usable, math.max(0, budget)))
 
     gap(12)
     table.insert(root, footer)
     root:resetLayout()
 
-    -- 把剩余高度平摊到各区块之间，让内容纵向铺满整屏、页脚落到底部。
+    -- 剩余高度先让区块间隙按各自基准值的比例吸收（单个最多长到基准的
+    -- CFG.gap_max_ratio 倍），吸收不掉的对半塞进上下边距，让内容块整体垂直居中。
+    -- 原来是一股脑均摊进所有间隙，"已读完"的书不够多时整屏看着松垮。
     -- 注意 getSize() 会缓存 _offsets，改完必须 resetLayout()，
     -- 否则 paintTo 时 _offsets[i] 为 nil 直接崩（verticalgroup.lua:51）。
     local ok_h, ch = pcall(function() return root:getSize().h end)
-    if ok_h and ch and #flex > 0 then
-        local rest = H - pad * 2 - ch
-        if rest > 0 then
-            local each = math.floor(rest / #flex)
-            local extra = rest - each * #flex          -- 除不尽的余数给最后一个
-            for i, sp in ipairs(flex) do
-                sp.width = sp.width + each + (i == #flex and extra or 0)
+    if ok_h and ch then
+        local bases = {}
+        for i, sp in ipairs(flex) do bases[i] = sp._base end
+        local alloc = Layout.distributeSlack(bases, avail_h - ch, CFG.gap_max_ratio)
+        for i, sp in ipairs(flex) do
+            sp.width = sp._base + alloc.gains[i]
+        end
+        -- 上下边距各插一个 span：顶部插到最前，底部追加在页脚之后。
+        -- 这两个 span 不进 flex 表——它们是边距，不参与间隙分配。
+        if alloc.top > 0 then
+            table.insert(root, 1, VerticalSpan:new{ width = alloc.top })
+        end
+        if alloc.bottom > 0 then
+            table.insert(root, VerticalSpan:new{ width = alloc.bottom })
+        end
+        root:resetLayout()
+
+        if os.getenv("DENSESTATS_DEBUG") == "1" then
+            -- distributeSlack 的效果在正常藏书量下只有几像素，目测验不出来；
+            -- 触顶数是关键信号：0/N 说明余白还没多到需要封顶，N/N 才是"已读完"接近空的情形
+            local given, capped = 0, 0
+            for i = 1, #flex do
+                given = given + alloc.gains[i]
+                if alloc.limits[i] > 0 and alloc.gains[i] >= alloc.limits[i] then
+                    capped = capped + 1
+                end
             end
-            root:resetLayout()
+            logger.info(string.format(
+                "densestats slack: rest=%d gains=%d 触顶=%d/%d top=%d bottom=%d",
+                avail_h - ch, given, capped, #flex, alloc.top, alloc.bottom))
         end
     end
 
-    return CenterContainer:new{
+    local widget = CenterContainer:new{
         densestats = true,   -- 标记：用来验证屏保确实拿到了我们的部件
         dimen = Screen:getSize(),
         FrameContainer:new{
@@ -587,6 +691,42 @@ local function buildWidget()
             root,
         },
     }
+    return widget, budget, fin_row_h, (cut1 or cut2)
+end
+
+-- 一屏排不下就整体降字号重排。KOReader 官方处理"铺满一屏"就是这个套路：
+-- calendarview.lua:1305-1319 用最宽字符串当探针 while 循环降号，
+-- keyvaluepage.lua:492-501 从行高反推字号并封顶，menu.lua:135-141 封顶到
+-- "至少能显示一行"。这一条同时解决三件事：横屏、用户把「屏幕 DPI」调大、
+-- 以及内容变长——它不假设任何设备参数，只问"这次放不放得下"。
+local function buildWidget()
+    local data = collect()
+    if not data then return nil end
+    local d = Stats.derive(data, os.time(), CFG)
+    -- 已读完列表也只读一次：loadCache 是 dofile，重排 8 轮就解析 8 遍，
+    -- 而这跑在入睡路径上（同 collect 外提的理由）
+    -- 计时用单调墙钟，不能用 os.clock()：后者是进程 CPU 时间，看不见阻塞 I/O，
+    -- 而 getFinished() 内部是 dofile 读缓存文件，主要成本恰恰是磁盘读。
+    -- 桌面有 page cache 所以无感，真机 eMMC 冷读时 os.clock() 会持续低估。
+    local t0 = time.now()
+    local fin_data = getFinished()
+
+    local widget, step, tries = Layout.fitScale(CFG.fscale_steps, function(k)
+        FSCALE = k
+        local w, budget, fin_row_h, truncated = layoutOnce(data, d, fin_data)
+        local fits = (not truncated) and budget >= CFG.min_fin_rows * fin_row_h
+        return fits, w
+    end)
+
+    if os.getenv("DENSESTATS_DEBUG") == "1" then
+        -- fin= 是回归哨兵：只看别的数字的话，fin_data 没送到（传了 nil）时
+        -- 每个字段都会一字不差，这个回归模式完全是盲区。
+        -- nil 记 -1，好和"有缓存但列表为空"的 0 区分开。
+        logger.info(string.format("densestats fit: FSCALE=%.2f tries=%d fin=%d 耗时=%.1fms",
+            step or -1, tries or 0, fin_data and #(fin_data.titles or {}) or -1,
+            time.to_ms(time.since(t0))))
+    end
+    return widget
 end
 
 -- ============================ 调试预览 ============================

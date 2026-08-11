@@ -7,17 +7,26 @@ stats.lua — 纯计算部分（格式化 + 汇总）
 
 local M = {}
 
+-- 时长的唯一写法。精度跟着量级走：
+--   < 1h    47m      分钟就是全部信息
+--   < 10h   3h20     分钟仍然有意义
+--  >= 10h   24h      分钟是噪音，去掉
+--
+-- 10 小时以上丢分钟，主要理由是横向余量：四列小块的截断判据是
+-- em宽度 × 强调档字号 × FSCALE <= 132（与设备无关），旧格式 "1234h56" 占到 99.7%，
+-- 只剩 0.3% 余量；换成 "1234h" 之后降到 72%。次要理由是 "10h02" 这种零填充
+-- 在大数上会被读成小数（像 10.02 小时），而歧义恰好只在两位数小时才明显。
+-- 反正读了十几个小时之后，多半小时少半小时也没人在意。
+--
+-- 一律截断不进位：宁可少报，也不要把没读的时间算进去。
 function M.fmtHM(sec)
     sec = math.floor(tonumber(sec) or 0)
     if sec < 0 then sec = 0 end
     local h = math.floor(sec / 3600)
     local m = math.floor((sec % 3600) / 60)
-    if h > 0 then return string.format("%dh%02d", h, m) end
-    return string.format("%dm", m)
-end
-
-function M.fmtHours(sec)
-    return string.format("%.1fh", (tonumber(sec) or 0) / 3600)
+    if h == 0 then return string.format("%dm", m) end
+    if h < 10 then return string.format("%dh%02d", h, m) end
+    return string.format("%dh", h)
 end
 
 -- lua-ljsqlite3 的 exec 结果按列存，转成行数组
