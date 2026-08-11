@@ -320,11 +320,12 @@ local function hrule(w)
     }
 end
 
--- 小块内部一律左对齐：标签、数值、附注共用左边缘，
--- 位数变化只往右长，数字不会左右晃。小块本身也由 cellRow 靠左摆放。
+-- 小块内部居中：标签与数值共用中轴，短标签配长数值时不会一头沉。
+-- 这里曾经是左对齐，理由是"位数变化只往右长，数字不会左右晃"——
+-- 但这是睡眠屏，一次渲染就静止在那儿，看不到位数变化的过程，那条理由不成立。
 local function cell(label, value, col_w, extra)
     local g = VerticalGroup:new{
-        align = "left",
+        align = "center",
         txt(label, FACE_L(), col_w),
         VerticalSpan:new{ width = Size.span.vertical_large },
         txt(value, FACE_V(), col_w),
@@ -336,24 +337,26 @@ local function cell(label, value, col_w, extra)
     return g
 end
 
--- 一排小块：两端对齐。第一块贴左边缘、最后一块贴右边缘，中间按剩余空间均分。
--- 之前是"等宽列 + 每列左对齐"，最后一列的字只占列宽的一小截，
--- 右边就空出一大块，看起来像左右边距不一样。
+-- 一排小块：等宽列，每列居中。列宽只由 usable_w 和列数决定，与内容无关，
+-- 所以上下两排的列边界完全一致，块与块自然对齐成网格。
+--
+-- 这里的历史值得留一句：最早是"等宽列 + 列内左对齐"，末列的字只占列宽一小截、
+-- 右边空出一大块，看着像左右边距不等；于是改成了"两端对齐 + 按实测宽度均分"。
+-- 那修掉了边距问题，却让两排的块宽不同、中间几块上下对不齐。
+-- 病根其实在左对齐——它让首列贴死左边而末列悬在中间。居中之后首列左边也有留白，
+-- 整排左右对称，等宽列才立得住，两个毛病一起消失。
 local function cellRow(items, usable_w)
     local n = #items
     if n == 0 then return VerticalGroup:new{}, false end
-    local cap_w = math.floor(usable_w / n)          -- 单块最大宽度，超了就截断
-    local cells, widths, total = {}, {}, 0
+    local col_w = math.floor(usable_w / n)          -- 列宽，也是单块最大宽度（超了截断）
     local truncated = false
+    local g = HorizontalGroup:new{ align = "top" }
     for i, it in ipairs(items) do
-        local c = cell(it[1], it[2], cap_w, it[3])
-        cells[i] = c
+        local c = cell(it[1], it[2], col_w, it[3])
         local ok, sz = pcall(function() return c:getSize() end)
-        widths[i] = (ok and sz and sz.w) or 0
-        total = total + widths[i]
-        -- 有没有哪一格被 cap_w 截成 "1234h5…"。isTruncated 走的是真实排版
+        -- 有没有哪一格被 col_w 截成 "1234h5…"。isTruncated 走的是真实排版
         -- （含 kerning 和 CJK 回退字体），比自己量宽度可靠（textwidget.lua:307-310）。
-        -- 截了就让外层的 fit 循环降一档字号重排：FSCALE 变小而 cap_w 不变，
+        -- 截了就让外层的 fit 循环降一档字号重排：FSCALE 变小而 col_w 不变，
         -- 所以截断是单调消失的，循环必然收敛。
         for _, w in ipairs(c) do
             if type(w) == "table" and type(w.isTruncated) == "function" then
@@ -361,24 +364,14 @@ local function cellRow(items, usable_w)
                 if ok_t and cut then truncated = true end
             end
         end
-    end
-
-    local g = HorizontalGroup:new{ align = "top" }
-    if n == 1 then
-        table.insert(g, cells[1])
-        return g, truncated
-    end
-    local space = usable_w - total
-    local gap_w = math.floor(space / (n - 1))
-    local extra = space - gap_w * (n - 1)           -- 除不尽的余数塞进最后一个间隙
-    if gap_w < 0 then gap_w, extra = 0, 0 end       -- 内容撑满时退化为紧挨着
-    for i, c in ipairs(cells) do
-        table.insert(g, c)
-        if i < n then
-            table.insert(g, HorizontalSpan:new{
-                width = gap_w + (i == n - 1 and extra or 0),
-            })
-        end
+        -- 除不尽的余数补给末列，整排才正好占满 usable_w，不会窄几个像素
+        table.insert(g, CenterContainer:new{
+            dimen = Geom:new{
+                w = col_w + (i == n and (usable_w - col_w * n) or 0),
+                h = (ok and sz and sz.h) or 0,
+            },
+            c,
+        })
     end
     return g, truncated
 end
