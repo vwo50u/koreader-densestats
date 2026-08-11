@@ -834,27 +834,26 @@ Expected：
 5. 页脚完整可见
 6. 「已读完」至少 2 行
 
-- [ ] **Step 3: 横屏睡眠（本次的主要保障，必测）**
+- [ ] **Step 3: 横屏——不测（用户决定，2026-08-11）**
 
-把设备转成横屏，再次进入睡眠。
+用户明确表示不考虑横屏，本计划不做横屏验证。
 
-Expected：内容不溢出屏幕，页脚仍然完整可见。字号会比竖屏小——这是 fit 循环
-自动降档的正常结果，不是 bug。
-
-改动前这里是溢出的（按模型 PW3 横屏溢出 82px，页脚看不见），所以这一步既是
-验证也是回归对比。
+Task 2 已提交的方向无关改动（留白按短边、曲线按内容区高度）保留不动：竖屏下
+`math.min(W, H)` 就等于 `W`，行为与改前一致，无害。fit 循环也保留——它的价值
+不止横屏，还覆盖用户调「屏幕 DPI」和内容变长这两种会溢出的情形，并且它就是
+「字号能放多大」这个问题的答案本身。
 
 - [ ] **Step 4: 抓 fit 循环日志**
 
 设备上装了 SSH 插件的话 `tail -f koreader/crash.log`，否则重启后直接看该文件。
-找 `densestats fit:` 那一行，记录竖屏和横屏各自选中的 FSCALE、tries、耗时。
+找 `densestats fit:` 那一行，记录竖屏下选中的 FSCALE、tries、耗时。
 
 **若耗时超过 200ms**：记进 README，并在汇报里明确指出——spec 说届时需要改成
 解析式预估高度，那是后续任务，不在本计划内。
 
 - [ ] **Step 5: 出问题时的退路**
 
-- 两排四列仍被截断 → 把 `CFG.fscale_steps` 的起点从 1.30 降到 1.20，重跑 Step 1-3
+- 两排四列仍被截断 → 把 `CFG.fscale_steps` 的起点从 1.30 降到 1.20，重跑 Step 1-2
 - 「已读完」一行都放不下 → 检查 `CFG.min_fin_rows` 是否真的生效（看日志里的 FSCALE 有没有降）
 - 整屏退回内置屏保 → 十有八九是 `layout.lua` 没拷过去，看 crash.log 里的
   `module 'layout' not found`
@@ -863,14 +862,15 @@ Expected：内容不溢出屏幕，页脚仍然完整可见。字号会比竖屏
 
 - [ ] **Step 6: 更新 README 的验证记录**
 
-在 `README.md` 的「已知待验证点」小节末尾追加记录：设备型号、竖屏/横屏各自选中的
-FSCALE、fit 循环耗时、本次实际验证过的项。保持该小节现有的编号/格式风格。
+在 `README.md` 的「已知待验证点」小节末尾追加记录：设备型号、竖屏下选中的
+FSCALE、fit 循环耗时、本次实际验证过的项。**明确写上横屏未验证**。
+保持该小节现有的编号/格式风格。
 
 - [ ] **Step 7: Commit**
 
 ```bash
 git add README.md
-git commit -m "docs: record PW3 portrait and landscape verification"
+git commit -m "docs: record PW3 portrait verification"
 ```
 
 ---
@@ -880,5 +880,5 @@ git commit -m "docs: record PW3 portrait and landscape verification"
 - `./dev.sh check` 五个文件全 OK
 - `./dev.sh test` 三个测试文件全绿（`test_layout.lua` 19 passed）
 - PW3 **竖屏**：两排四列不截断，内容垂直居中，页脚可见，「已读完」≥ 2 行
-- PW3 **横屏**：不溢出，页脚可见
+- 横屏不在本计划范围内（用户决定）
 - fit 循环耗时已实测并记录在 README
