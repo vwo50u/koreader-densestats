@@ -479,6 +479,7 @@ local function finishedRows(fin_data, usable_w, budget_h)
     local gap_w = Screen:scaleBySize(14)
     local line_gap = Size.padding.large
     local used, shown = 0, 0
+    local last_h = 0            -- 最后一行的行高：退行时要拿它回滚 used
 
     for _, t in ipairs(items) do
         local dw = txt(t.label, FACE_L(), date_w)
@@ -491,11 +492,28 @@ local function finishedRows(fin_data, usable_w, budget_h)
             tw })
         table.insert(g, VerticalSpan:new{ width = line_gap })
         used = used + h + line_gap
+        last_h = h
         shown = shown + 1
     end
 
     if shown < #items then
-        local more = txt(string.format("…更早还有 %d 本", #items - shown), FACE_S(), usable_w)
+        -- 上面这个循环是贪心的，会把 budget_h 吃干净，fit 循环替提示行预留的那块
+        -- 空间照样会被填成书。所以提示行放不下时要退掉最后一行给它腾位置：
+        -- 宁可少显示一本，也要让用户知道下面还有。fit 循环按 min_fin_rows 行
+        -- + 提示行预留过空间（见 buildWidget 的 need），退一行后仍不少于 min_fin_rows 行，
+        -- 所以只退一行、不循环。shown > 1 是兜底：只剩一本时显示这本书比
+        -- 显示"还有 N 本"有用。
+        local function hintFor(n)
+            return txt(string.format("…更早还有 %d 本", n), FACE_S(), usable_w)
+        end
+        local more = hintFor(#items - shown)
+        if used + more:getSize().h > budget_h and shown > 1 then
+            table.remove(g)                     -- 退掉 VerticalSpan
+            table.remove(g)                     -- 退掉 HorizontalGroup
+            used = used - (last_h + line_gap)
+            shown = shown - 1
+            more = hintFor(#items - shown)      -- 少显示了一本，N 变了，文案得重建
+        end
         if used + more:getSize().h <= budget_h then table.insert(g, more) end
     end
     return g
