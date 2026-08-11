@@ -382,13 +382,15 @@ function CurveWidget:paintTo(bb, x, y)
     end
 end
 
-local function curveWidget(curve, usable_w)
+local function curveWidget(curve, usable_w, avail_h)
     local peak = 1
     for _, v in ipairs(curve) do if v > peak then peak = v end end
     return CurveWidget:new{
         values = curve,
         w = usable_w,
-        h = math.floor(Screen:getHeight() * 0.10),   -- 曲线高度按屏幕比例，跨设备一致
+        -- 按"内容区"的比例，不是按屏幕高度：横屏时两者差得远，
+        -- 占内容区 12% 才是本意（screensaver.lua:330-335 不会把本模式转成竖屏）
+        h = math.floor(avail_h * 0.12),
         scale = math.max(peak, 3600),
         gap = Screen:scaleBySize(1),
     }, peak
@@ -407,7 +409,7 @@ local function currentBook(cur, usable_w)
     local bar_w = usable_w
     local fill = math.max(2, math.floor(bar_w * math.min(cur.frac, 1)))
     table.insert(g, HorizontalGroup:new{ align = "center",
-        rect(fill, Screen:scaleBySize(10)),
+        rect(fill, Screen:scaleBySize(14)),   -- 与官方 readerprogress.lua:262 一致
         HorizontalSpan:new{ width = 1 },
     })
     table.insert(g, VerticalSpan:new{ width = Size.padding.default })
@@ -479,12 +481,11 @@ local function buildWidget()
     if not data then return nil end
     local d = Stats.derive(data, os.time(), CFG)
 
-    -- 左右留白按屏幕宽度取比例。原来用 scaleBySize(16)，在 300 DPI 的设备上
-    -- 只有 4% 宽，贴边很难看；原生那套观感更宽松，这里取 6%（并给个下限）。
-    -- 下限用 KOReader 的 Size.padding.fullscreen（原生屏保就是这个值，约屏宽 3.7%），
-    -- 正常情况取屏宽 6%，比原生宽一些。
-    local pad = math.max(Size.padding.fullscreen, math.floor(Screen:getWidth() * 0.06))
     local W, H = Screen:getWidth(), Screen:getHeight()
+    -- 留白按屏幕"短边"的 6%，不能按 getWidth()：横屏时宽度是长边，
+    -- 按宽度取会白白吃掉本来就紧张的高度。下限用 KOReader 的
+    -- Size.padding.fullscreen（原生全屏 widget 就是这个值，readerprogress.lua:30）。
+    local pad = math.max(Size.padding.fullscreen, math.floor(math.min(W, H) * 0.06))
     local usable = W - pad * 2
     local root = VerticalGroup:new{ align = "left" }
 
@@ -513,7 +514,7 @@ local function buildWidget()
     }, usable))
     gap(22)
 
-    local curve, peak = curveWidget(d.curve, usable)
+    local curve, peak = curveWidget(d.curve, usable, H - pad * 2)
     table.insert(root, txt(string.format("最近 30 天 · 共 %s · 峰值 %s",
         fmtHM(d.curve_total), fmtHM(peak)), FACE_L()))
     gap(5)
