@@ -806,13 +806,112 @@ margins that vertically center the content."
 
 ---
 
+### Task 4b: 让间隙分配可观测（DEBUG 日志）
+
+Task 4 验收发现的计划缺陷：`distributeSlack` 是本计划里**唯一一个完全没有运行时信号**的机制
+（`fitScale` 至少有 `FSCALE=/tries=` 那行）。而按桌面实测参数推算，它的效果在正常藏书量下
+只有 7px 量级——上下边距 3px/4px，**肉眼不可辨**。原计划里「间隙明显变紧」「上下大致相等的
+空白」这两条目测标准因此是验不出来的，照着测只会误判成「改动没生效」。
+
+用户 2026-08-11 裁决：加一行 DEBUG 日志，不靠目测。
+
+顺带修掉 Task 3 验收提的度量口径问题：`t0 = os.clock()` 现在落在 `getFinished()` 之后，
+所以报出来的耗时不含那次 `dofile` 缓存解析，真机报告会低估完整构建成本。
+
+**Files:**
+- Modify: `densestats.koplugin/main.lua`（`layoutOnce` 的 slack 块、`buildWidget` 的计时起点）
+
+**Interfaces:**
+- Consumes: Task 4 的 `alloc`（`{ gains, top, bottom }`）
+- Produces: 无
+
+- [ ] **Step 1: 把计时起点挪到 `getFinished()` 之前**
+
+在 `buildWidget` 里，把 `local t0 = os.clock()` 移动到 `local fin_data = getFinished()`
+**之前**，使 `collect()` 之后的整个构建过程都在计时区内。只挪位置，不改别的。
+
+- [ ] **Step 2: 在 slack 块里打诊断日志**
+
+在 `layoutOnce` 的 slack 块里、`root:resetLayout()` **之后**，加：
+
+```lua
+        if os.getenv("DENSESTATS_DEBUG") == "1" then
+            -- distributeSlack 的效果在正常藏书量下只有几像素，目测验不出来；
+            -- 触顶数是关键信号：0/N 说明余白还没多到需要封顶，N/N 才是"已读完"接近空的情形
+            local given, capped = 0, 0
+            for i, sp in ipairs(flex) do
+                given = given + alloc.gains[i]
+                if alloc.gains[i] >= math.floor(sp._base * (CFG.gap_max_ratio - 1)) then
+                    capped = capped + 1
+                end
+            end
+            logger.info(string.format(
+                "densestats slack: rest=%d gains=%d 触顶=%d/%d top=%d bottom=%d",
+                avail_h - ch, given, capped, #flex, alloc.top, alloc.bottom))
+        end
+```
+
+- [ ] **Step 3: 语法检查**
+
+Run: `./dev.sh check`
+Expected: 五个文件全 `OK`，退出码 0。
+
+- [ ] **Step 4: 单元测试仍全绿**
+
+Run: `./dev.sh test`
+Expected: 三个测试文件全通过（21 / 56 / 19）。
+
+- [ ] **Step 5: 桌面预览，核对日志数字**
+
+Run: 后台启动 `DENSESTATS_DEBUG=1 DENSESTATS_AUTOSHOW=1 ./dev.sh run`，等约 25 秒，
+`pkill -f KOReader`，再 grep `/tmp/densestats-run.log`。
+
+Expected：出现 `densestats slack:` 行。在这台桌面机（1146×1596、FSCALE=1.20）上，
+验收模型推算的值是 `rest=37 gains=30 触顶=0/10 top=3 bottom=4`。
+**实测与推算若有出入，如实报出来并说明差异**——模型是手工复刻的，可能漏算某个 span，
+以实测为准，但差得离谱（比如 `rest` 是负数或几百）就要停下来查。
+
+- [ ] **Step 6: 造一次空列表场景对照**
+
+把缓存文件临时移走，再跑一次 Step 5：
+
+```bash
+D="$HOME/Library/Application Support/KOReader/settings"
+mv "$D/densestats_finished.lua" "$D/densestats_finished.lua.bak" 2>/dev/null || true
+# 跑 Step 5，记录日志
+mv "$D/densestats_finished.lua.bak" "$D/densestats_finished.lua" 2>/dev/null || true
+```
+
+Expected：`触顶` 应该变成 `10/10`，`top`/`bottom` 升到 25 左右。这证明封顶和居中两个分支
+都真的可达，而不是永远走不到的死代码。
+
+**缓存文件路径可能不在上面这个位置**（`DataStorage:getSettingsDir()` 决定）。找不到就
+先从日志或 `find` 定位；实在找不到就跳过本步，写进报告，不要反复试。**无论如何都要把
+文件恢复回去。**
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add densestats.koplugin/main.lua
+git commit -m "feat: log slack allocation under DENSESTATS_DEBUG
+
+distributeSlack was the only mechanism in this change with no runtime
+signal, and its effect is a few pixels at normal library sizes — too
+small to eyeball. The cap count is the useful one: 0/N means there was
+never enough leftover to cap, N/N is the near-empty finished list.
+Also moves the fit timer above getFinished so the reported cost covers
+the whole build."
+```
+
+---
+
 ### Task 5: 真机（PW3）验证
 
 **Files:**
 - Modify: `README.md`（「已知待验证点」小节）
 
 **Interfaces:**
-- Consumes: Task 2/3/4 的全部改动
+- Consumes: Task 2/3/4/4b 的全部改动
 - Produces: 无
 
 这一步**不可省**。计划里所有定量结论都来自源码复刻的模型，不是实测。
@@ -830,9 +929,11 @@ Expected：
 1. 第一排「今日 / 本周 / 本月 / 今年」四列不换行、不截断
 2. 第二排「连续天数 / 有效日均 / 累计 / 今日页数」四列不换行、不截断
 3. 字号明显比改动前大
-4. 内容块整体垂直居中，上下空白大致相等
-5. 页脚完整可见
-6. 「已读完」至少 2 行
+4. 页脚完整可见
+5. 「已读完」至少 2 行
+
+**不要目测「垂直居中」和「间隙变紧」**——按 Task 4 验收的推算，正常藏书量下上下边距只有
+3px/4px、间隙总共只紧了 7px，肉眼不可辨。这两项改看 Task 4b 加的 `densestats slack:` 日志。
 
 - [ ] **Step 3: 横屏——不测（用户决定，2026-08-11）**
 
@@ -846,7 +947,8 @@ Task 2 已提交的方向无关改动（留白按短边、曲线按内容区高�
 - [ ] **Step 4: 抓 fit 循环日志**
 
 设备上装了 SSH 插件的话 `tail -f koreader/crash.log`，否则重启后直接看该文件。
-找 `densestats fit:` 那一行，记录竖屏下选中的 FSCALE、tries、耗时。
+找 `densestats fit:` 和 `densestats slack:` 两行，记录竖屏下选中的 FSCALE、tries、耗时，
+以及 slack 的 rest / gains / 触顶 / top / bottom。
 
 **若耗时超过 200ms**：记进 README，并在汇报里明确指出——spec 说届时需要改成
 解析式预估高度，那是后续任务，不在本计划内。
