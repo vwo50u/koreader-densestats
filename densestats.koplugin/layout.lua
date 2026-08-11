@@ -13,42 +13,54 @@ local M = {}
 --
 -- 按比例分而不是均分，是为了保住疏密节奏：基准 22 的间隙该比基准 5 的多拿。
 -- 均分 + 封顶会让小间隙先触顶而大间隙还很空。
--- 官方同构先例：keyvaluepage.lua:493-495、calendarview.lua:1154-1156。
+-- 这一条没有官方先例，是本项目的选择。
 --
 -- bases:     各间隙的基准宽度（像素，调用方传进来时已经缩放过）
 -- rest:      待分配的剩余高度（像素）；<= 0 表示没得分
 -- max_ratio: 单个间隙最多长到基准值的几倍
--- 返回 { gains = {每个间隙该加多少}, top = 顶部边距, bottom = 底部边距 }
+-- 返回 { gains = {每个间隙该加多少}, limits = {每个间隙的上限},
+--        top = 顶部边距, bottom = 底部边距 }
+-- limits 一并返回，是为了让调用方的诊断日志判断"触顶"时不必自己复制这个公式。
 function M.distributeSlack(bases, rest, max_ratio)
     bases = bases or {}
     local n = #bases
-    local gains = {}
-    for i = 1, n do gains[i] = 0 end
-
-    rest = math.floor(tonumber(rest) or 0)
-    if rest <= 0 then return { gains = gains, top = 0, bottom = 0 } end
-
     local ratio = tonumber(max_ratio) or 1
+    local gains, limits = {}, {}
     local base_total = 0
-    for i = 1, n do base_total = base_total + (tonumber(bases[i]) or 0) end
+    for i = 1, n do
+        local b = tonumber(bases[i]) or 0
+        gains[i] = 0
+        -- +0.5 与 main.lua 的 scaled() 用同一套取整约定。直接 floor 会因为
+        -- (ratio - 1) 的浮点误差方向随 ratio 变化而偶尔少 1：
+        -- ratio=1.6 时 1.6-1 略大于 0.6（安全），但 ratio=1.2 时 1.2-1 略小于 0.2，
+        -- 10 * 它算出 1.999… 会被 floor 成 1，而精确值是 2。
+        local lim = math.floor(b * (ratio - 1) + 0.5)
+        limits[i] = lim > 0 and lim or 0
+        base_total = base_total + b
+    end
+
+    -- 早退路径上 limits 也必须是真实上限：调用方用 gains[i] >= limits[i] 判触顶，
+    -- 这里若返回 0 就会把"没得分"误报成"全触顶"。
+    rest = math.floor(tonumber(rest) or 0)
+    if rest <= 0 then return { gains = gains, limits = limits, top = 0, bottom = 0 } end
 
     local given = 0
     if base_total > 0 then
         for i = 1, n do
-            local b = tonumber(bases[i]) or 0
-            local want  = math.floor(rest * b / base_total)
-            local limit = math.floor(b * (ratio - 1))
-            if limit < 0 then limit = 0 end
-            local add = math.min(want, limit)
+            local want = math.floor(rest * (tonumber(bases[i]) or 0) / base_total)
+            local add = math.min(want, limits[i])
             gains[i] = add
             given = given + add
         end
     end
 
-    -- floor 的零头也留在这里，跟着一起进边距；差几个像素不值得再分一轮
+    -- floor 的零头也留在这里，跟着一起进边距；差几个像素不值得再分一轮。
+    -- 余量归还边距的做法有官方先例：keyvaluepage.lua:493-495 把 floor 丢掉的像素
+    -- 对半塞进标题与内容之间，calendarview.lua:1154-1156 把列宽算完的余量反推回
+    -- outer_padding。
     local spare = rest - given
     local top = math.floor(spare / 2)
-    return { gains = gains, top = top, bottom = spare - top }
+    return { gains = gains, limits = limits, top = top, bottom = spare - top }
 end
 
 -- 从大到小试各档系数，返回第一个通过的结果。

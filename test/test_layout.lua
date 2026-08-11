@@ -59,6 +59,13 @@ ok(#r9.gains == 0 and r9.top == 50 and r9.bottom == 50, "bases 为 nil 不炸")
 local r10 = L.distributeSlack({ 0, 0 }, 100, 1.6)
 ok(sum(r10.gains) == 0 and r10.top == 50 and r10.bottom == 50, "基准全 0 不除零")
 
+print("== distributeSlack: limits 一并返回 ==")
+local r11 = L.distributeSlack({ 10 }, 100, 1.2)
+ok(r11.limits[1] == 2, "ratio=1.2 的上限精确取整，不因浮点少 1", tostring(r11.limits[1]))
+local r12 = L.distributeSlack({ 100, 300 }, 0, 1.6)
+ok(r12.limits[1] == 60 and r12.limits[2] == 180, "rest<=0 早退也要给出真实上限",
+   tostring(r12.limits[1]) .. "/" .. tostring(r12.limits[2]))
+
 print("== fitScale ==")
 local tried = {}
 local function mkprobe(accept)
