@@ -517,6 +517,7 @@ local function layoutOnce(data, d, fin_data)
     -- 按宽度取会白白吃掉本来就紧张的高度。下限用 KOReader 的
     -- Size.padding.fullscreen（原生全屏 widget 就是这个值，readerprogress.lua:30）。
     local pad = math.max(Size.padding.fullscreen, math.floor(math.min(W, H) * 0.06))
+    local avail_h = H - pad * 2          -- 内容区高度：曲线、预算、余白分配共用同一个口径
     local usable = W - pad * 2
     local root = VerticalGroup:new{ align = "left" }
 
@@ -524,7 +525,9 @@ local function layoutOnce(data, d, fin_data)
     -- 原来的做法是把剩余空间一股脑塞在末尾，内容全挤在屏幕上半部分。
     local flex = {}
     local function gap(px)
-        local sp = VerticalSpan:new{ width = Screen:scaleBySize(px) }
+        local w = Screen:scaleBySize(px)
+        local sp = VerticalSpan:new{ width = w }
+        sp._base = w            -- 记下基准值：余白按基准比例分，不是均分
         flex[#flex + 1] = sp
         table.insert(root, sp)
     end
@@ -547,7 +550,7 @@ local function layoutOnce(data, d, fin_data)
     table.insert(root, row2)
     gap(22)
 
-    local curve, peak = curveWidget(d.curve, usable, H - pad * 2)
+    local curve, peak = curveWidget(d.curve, usable, avail_h)
     table.insert(root, txt(string.format("最近 30 天 · 共 %s · 峰值 %s",
         fmtHM(d.curve_total), fmtHM(peak)), FACE_L()))
     gap(5)
@@ -588,7 +591,7 @@ local function layoutOnce(data, d, fin_data)
     local used_h = root:getSize().h
     -- 两个 12：一个是页脚上方的 gap(12)，一个是"已读完"列表和它上方标题之间的
     -- 安全余量。都得从预算里扣，否则会顶出屏幕。
-    local budget = H - pad * 2 - used_h - footer_h - Screen:scaleBySize(12) - Screen:scaleBySize(12)
+    local budget = avail_h - used_h - footer_h - Screen:scaleBySize(12) - Screen:scaleBySize(12)
     -- 一行"已读完"占多高：口径必须和 finishedRows 里一致（正文档字高 + line_gap）
     local fin_row_h = txt("2026-08", FACE_M()):getSize().h + Size.padding.large
     table.insert(root, finishedRows(fin_data, usable, math.max(0, budget)))
@@ -597,20 +600,28 @@ local function layoutOnce(data, d, fin_data)
     table.insert(root, footer)
     root:resetLayout()
 
-    -- 把剩余高度平摊到各区块之间，让内容纵向铺满整屏、页脚落到底部。
+    -- 剩余高度先让区块间隙按各自基准值的比例吸收（单个最多长到基准的
+    -- CFG.gap_max_ratio 倍），吸收不掉的对半塞进上下边距，让内容块整体垂直居中。
+    -- 原来是一股脑均摊进所有间隙，"已读完"的书不够多时整屏看着松垮。
     -- 注意 getSize() 会缓存 _offsets，改完必须 resetLayout()，
     -- 否则 paintTo 时 _offsets[i] 为 nil 直接崩（verticalgroup.lua:51）。
     local ok_h, ch = pcall(function() return root:getSize().h end)
-    if ok_h and ch and #flex > 0 then
-        local rest = H - pad * 2 - ch
-        if rest > 0 then
-            local each = math.floor(rest / #flex)
-            local extra = rest - each * #flex          -- 除不尽的余数给最后一个
-            for i, sp in ipairs(flex) do
-                sp.width = sp.width + each + (i == #flex and extra or 0)
-            end
-            root:resetLayout()
+    if ok_h and ch then
+        local bases = {}
+        for i, sp in ipairs(flex) do bases[i] = sp._base end
+        local alloc = Layout.distributeSlack(bases, avail_h - ch, CFG.gap_max_ratio)
+        for i, sp in ipairs(flex) do
+            sp.width = sp._base + alloc.gains[i]
         end
+        -- 上下边距各插一个 span：顶部插到最前，底部追加在页脚之后。
+        -- 这两个 span 不进 flex 表——它们是边距，不参与间隙分配。
+        if alloc.top > 0 then
+            table.insert(root, 1, VerticalSpan:new{ width = alloc.top })
+        end
+        if alloc.bottom > 0 then
+            table.insert(root, VerticalSpan:new{ width = alloc.bottom })
+        end
+        root:resetLayout()
     end
 
     local widget = CenterContainer:new{
