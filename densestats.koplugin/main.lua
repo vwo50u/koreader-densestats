@@ -622,6 +622,21 @@ local function layoutOnce(data, d, fin_data)
             table.insert(root, VerticalSpan:new{ width = alloc.bottom })
         end
         root:resetLayout()
+
+        if os.getenv("DENSESTATS_DEBUG") == "1" then
+            -- distributeSlack 的效果在正常藏书量下只有几像素，目测验不出来；
+            -- 触顶数是关键信号：0/N 说明余白还没多到需要封顶，N/N 才是"已读完"接近空的情形
+            local given, capped = 0, 0
+            for i, sp in ipairs(flex) do
+                given = given + alloc.gains[i]
+                if alloc.gains[i] >= math.floor(sp._base * (CFG.gap_max_ratio - 1)) then
+                    capped = capped + 1
+                end
+            end
+            logger.info(string.format(
+                "densestats slack: rest=%d gains=%d 触顶=%d/%d top=%d bottom=%d",
+                avail_h - ch, given, capped, #flex, alloc.top, alloc.bottom))
+        end
     end
 
     local widget = CenterContainer:new{
@@ -648,9 +663,9 @@ local function buildWidget()
     local d = Stats.derive(data, os.time(), CFG)
     -- 已读完列表也只读一次：loadCache 是 dofile，重排 8 轮就解析 8 遍，
     -- 而这跑在入睡路径上（同 collect 外提的理由）
+    local t0 = os.clock()
     local fin_data = getFinished()
 
-    local t0 = os.clock()
     local widget, step, tries = Layout.fitScale(CFG.fscale_steps, function(k)
         FSCALE = k
         local w, budget, fin_row_h, truncated = layoutOnce(data, d, fin_data)
