@@ -276,8 +276,10 @@ end
 -- 用户把「屏幕 DPI」调大、以及内容变长时没有退路。
 --
 -- 仍然只用三档，且按"角色"固定分配，同一角色全篇一致：
---   强调 只给统计大数字；正文 给书名、日期这类主体内容；
---   辅助 给标签、说明、明细、页脚。
+--   强调 只给统计大数字；
+--   正文 只给"当前在读"的书名——它是整屏唯一的焦点；
+--   辅助 给标签、说明、明细、页脚，以及"已读完"清单
+--        （那是归档参考，不该和焦点抢视觉重量）。
 -- 之前是哪里觉得不合适就单独调一处，屏幕上同时出现四五种大小，看着就乱。
 local BASE_V, BASE_M, BASE_L = 25, 20, 15   -- largeffont / ffont / smallffont
 local FSCALE = 1.0
@@ -469,7 +471,7 @@ local function finishedRows(fin_data, usable_w, budget_h)
     local items = Stats.groupFinished(list)
 
     -- 日期列宽按真实文字宽度量，写死的话字号一变就会被截成 "2026-..."
-    local probe = txt("2026-08", FACE_M())
+    local probe = txt("2026-08", FACE_L())
     local ok_p, psz = pcall(function() return probe:getSize() end)
     local date_w = ((ok_p and psz and psz.w) or Screen:scaleBySize(80))
                    + Screen:scaleBySize(6)
@@ -478,8 +480,8 @@ local function finishedRows(fin_data, usable_w, budget_h)
     local used, shown = 0, 0
 
     for _, t in ipairs(items) do
-        local dw = txt(t.label, FACE_M(), date_w)
-        local tw = txt(t.title or "", FACE_M(), usable_w - date_w - gap_w)
+        local dw = txt(t.label, FACE_L(), date_w)
+        local tw = txt(t.title or "", FACE_L(), usable_w - date_w - gap_w)
         local h = math.max(dw:getSize().h, tw:getSize().h)
         if used + h + line_gap > budget_h then break end
         table.insert(g, HorizontalGroup:new{ align = "center",
@@ -592,8 +594,9 @@ local function layoutOnce(data, d, fin_data)
     -- 两个 12：一个是页脚上方的 gap(12)，一个是"已读完"列表和它上方标题之间的
     -- 安全余量。都得从预算里扣，否则会顶出屏幕。
     local budget = avail_h - used_h - footer_h - Screen:scaleBySize(12) - Screen:scaleBySize(12)
-    -- 一行"已读完"占多高：口径必须和 finishedRows 里一致（正文档字高 + line_gap）
-    local fin_row_h = txt("2026-08", FACE_M()):getSize().h + Size.padding.large
+    -- 一行"已读完"占多高：口径必须和 finishedRows 里的行高一致
+    -- （同为辅助档 + Size.padding.large），否则 fit 循环会按错误的行高预留空间
+    local fin_row_h = txt("2026-08", FACE_L()):getSize().h + Size.padding.large
     table.insert(root, finishedRows(fin_data, usable, math.max(0, budget)))
 
     gap(12)
