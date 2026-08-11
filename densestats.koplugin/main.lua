@@ -81,7 +81,7 @@ local function tzOffset()
     return math.floor(os.difftime(now, os.time(u)))
 end
 
-local fmtHM, fmtHours, rowsOf = Stats.fmtHM, Stats.fmtHours, Stats.rowsOf
+local fmtHM, rowsOf = Stats.fmtHM, Stats.rowsOf
 
 -- ============================ 取数 ============================
 
@@ -451,9 +451,9 @@ local function currentBook(cur, usable_w)
     local line
     if cur.pages > 0 then
         line = string.format("%d%%  ·  %d / %d 页  ·  累计 %s",
-            math.floor(cur.frac * 100 + 0.5), cur.page, cur.pages, fmtHours(cur.sec))
+            math.floor(cur.frac * 100 + 0.5), cur.page, cur.pages, fmtHM(cur.sec))
     else
-        line = string.format("累计 %s", fmtHours(cur.sec))
+        line = string.format("累计 %s", fmtHM(cur.sec))
     end
     table.insert(g, txt(line, FACE_L(), usable_w))
     return g
@@ -565,7 +565,7 @@ local function layoutOnce(data, d, fin_data)
     local row2, cut2 = cellRow({
         { "连续天数", tostring(d.streak) },
         { "有效日均", fmtHM(d.avg_active) },
-        { "累计", fmtHours(d.total) },
+        { "累计", fmtHM(d.total) },
         { "今日页数", tostring(d.pages_today), string.format("本周 %d 页", d.pages_week) },
     }, usable)
     table.insert(root, row2)
