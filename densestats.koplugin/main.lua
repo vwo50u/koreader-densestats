@@ -384,6 +384,12 @@ function CurveWidget:getSize()
     return Geom:new{ w = self.w, h = self.h }
 end
 
+-- 日均虚线距曲线顶端的偏移。paintTo 和外面摆标签的地方都要它，
+-- 所以只在这里算一次——两边各写一份表达式，改一处漏一处就会错位。
+function CurveWidget:lineOffset()
+    return self.h - math.floor(self.h * (self.avg or 0) / self.scale)
+end
+
 function CurveWidget:paintTo(bb, x, y)
     local n = #(self.values or {})
     if n == 0 or self.w <= 0 or self.h <= 0 then return end
@@ -400,9 +406,8 @@ function CurveWidget:paintTo(bb, x, y)
     -- 有效日均参考线：虚线，画满整宽。原来这里画的是"1 小时"，那是个外部标准；
     -- 换成日均之后它是读者自己的基准，一眼能看出这 30 天里哪些天超过了平均。
     -- 日均为 0（没有任何记录）时不画，否则线会贴在底边和柱子根部糊在一起。
-    local avg = self.avg or 0
-    if avg <= 0 then return end
-    local ry = y + self.h - math.floor(self.h * avg / self.scale)
+    if (self.avg or 0) <= 0 then return end
+    local ry = y + self:lineOffset()
     local dash, step = Screen:scaleBySize(5), Screen:scaleBySize(10)
     local px = x
     while px < x + self.w do
@@ -421,7 +426,12 @@ local function curveWidget(curve, usable_w, avail_h, avg)
     -- 按"内容区"的比例，不是按屏幕高度：横屏时两者差得远，
     -- 占内容区 12% 才是本意（screensaver.lua:330-335 不会把本模式转成竖屏）
     local h = math.floor(avail_h * 0.12)
-    local scale = math.max(peak, 3600)
+    -- avg 必须进刻度。它是"终身"日均（stats.lua 用 book 表全量汇总算的），
+    -- 而 peak 只是最近 30 天的单日峰值——两个窗口不同。只要这 30 天比平时清淡
+    -- （放假、忙、生病），avg 就会超过 peak，虚线被算到曲线框外、横穿上方的标题。
+    -- 纳入之后 lineOffset() ∈ [0, h] 恒成立；副作用是柱子整体压低、虚线贴顶，
+    -- 而那正是"这 30 天没有一天达到我的平均水平"的正确表达。
+    local scale = math.max(peak, avg, 3600)
     local w = CurveWidget:new{
         values = curve,
         w = usable_w,
@@ -430,7 +440,7 @@ local function curveWidget(curve, usable_w, avail_h, avg)
         gap = Screen:scaleBySize(1),
         avg = avg,
     }
-    return w, peak, h - math.floor(h * avg / scale)
+    return w, peak, w:lineOffset()
 end
 
 local function currentBook(cur, usable_w)
@@ -559,26 +569,33 @@ local function layoutOnce(data, d, fin_data)
 
     -- 日均的时长标签摆在曲线左边、图外，与虚线同高。放图内会遮住最左边两三天的
     -- 柱子；而放回格子里就只是个孤立数字，画成线才看得出哪些天超过了自己的平均。
-    local avg_label = txt(fmtHM(d.avg_active), FACE_L())
-    local avg_w = avg_label:getSize().w
-    local avg_gap = Screen:scaleBySize(8)
+    -- 日均为 0（全新安装、一条记录都没有）时不画参考线，标签也别摆——
+    -- 否则会出现一个指向虚空的"0m"。这种情况下曲线占满整宽。
+    local avg_label = d.avg_active > 0 and txt(fmtHM(d.avg_active), FACE_L()) or nil
+    local avg_gap = avg_label and Screen:scaleBySize(8) or 0
+    local avg_w = avg_label and avg_label:getSize().w or 0
     local curve, peak, line_y = curveWidget(d.curve, usable - avg_w - avg_gap,
                                             avail_h, d.avg_active)
     table.insert(root, txt(string.format("最近 30 天 · 共 %s · 峰值 %s",
         fmtHM(d.curve_total), fmtHM(peak)), FACE_L()))
     gap(5)
-    -- 标签垂直居中对齐到虚线，并夹在曲线高度范围内，免得日均极高或极低时跑出去
-    local label_h = avg_label:getSize().h
-    local label_top = math.max(0, math.min(curve:getSize().h - label_h,
-                                           line_y - math.floor(label_h / 2)))
-    table.insert(root, HorizontalGroup:new{ align = "top",
-        VerticalGroup:new{ align = "left",
-            VerticalSpan:new{ width = label_top },
-            avg_label,
-        },
-        HorizontalSpan:new{ width = avg_gap },
-        curve,
-    })
+    if avg_label then
+        -- 标签垂直居中对齐到虚线，并夹在曲线高度范围内。刻度已经把 avg 纳入
+        -- （见 curveWidget），line_y 不会越界，这层钳位只兜极端字号下的取整误差。
+        local label_h = avg_label:getSize().h
+        local label_top = math.max(0, math.min(curve:getSize().h - label_h,
+                                               line_y - math.floor(label_h / 2)))
+        table.insert(root, HorizontalGroup:new{ align = "top",
+            VerticalGroup:new{ align = "left",
+                VerticalSpan:new{ width = label_top },
+                avg_label,
+            },
+            HorizontalSpan:new{ width = avg_gap },
+            curve,
+        })
+    else
+        table.insert(root, centered(usable, curve))
+    end
     gap(22)
     table.insert(root, centered(usable, hrule(usable)))
     gap(16)

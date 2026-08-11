@@ -24,7 +24,7 @@ ok(S.fmtHM(10 * 3600 + 120) == "10h", "10 小时以上丢弃分钟", S.fmtHM(10 
 ok(S.fmtHM(1234 * 3600 + 3360) == "1234h", "四位数小时", S.fmtHM(1234 * 3600 + 3360))
 -- 截断而不是四舍五入：宁可少报，也不要把没读的时间算进去
 ok(S.fmtHM(11 * 3600 + 3599) == "11h", "接近整点也不进位", S.fmtHM(11 * 3600 + 3599))
-ok(S.fmtHours == nil, "fmtHours 已移除，全篇只留一套时长写法", tostring(S.fmtHours))
+ok(S.fmtHours == nil, "fmtHours 已从 stats 移除", tostring(S.fmtHours))
 
 print("== rowsOf ==")
 ok(#S.rowsOf(nil, 2) == 0, "nil 结果返回空表")
