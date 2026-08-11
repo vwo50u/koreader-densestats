@@ -123,3 +123,7 @@ macOS 版 KOReader **不在 Releases 里**，要从 GitHub Actions 的构建产�
 - **时区**：`start_time` 是 UTC 秒，偏移在 Lua 里算好再传进 SQL（不依赖 SQLite 的
   `localtime` 修饰符，Kindle 系统时区常为 UTC）。
 - **连续天数**：今天还没读不算断，从昨天往回数。
+
+## 许可
+
+[AGPL-3.0](LICENSE)，与 KOReader 本体一致。
