@@ -107,6 +107,10 @@ macOS 版 KOReader **不在 Releases 里**，要从 GitHub Actions 的构建产�
   `onReaderReady`。KOReader 2026.07 还把插件的 `onXxx` 处理器包成了「可调用的表」
   （带 `__call` 的 metatable），判断时不能只认 `type == "function"`。
 
+## 验证状态
+
+已在 Kindle Paperwhite 3（1072×1448）竖屏下真机验证通过。以下是仍未解决的部分。
+
 ## 已知限制
 
 - **横屏未验证**。方向无关的尺寸基准已经就位，但没在真机上转横屏跑过。

@@ -127,6 +127,11 @@ nobody has to look them up again (line numbers are from KOReader 2026.07):
   handlers in *callable tables* (a metatable with `__call`), so checking
   `type == "function"` is not enough.
 
+## Status
+
+Verified in portrait on a Kindle Paperwhite 3 (1072×1448). Everything below is what
+remains open.
+
 ## Known limitations
 
 - **Landscape is unverified.** The orientation-independent sizing is in place, but it has
