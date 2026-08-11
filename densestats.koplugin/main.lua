@@ -30,6 +30,7 @@ local UIManager = require("ui/uimanager")
 local VerticalGroup = require("ui/widget/verticalgroup")
 local VerticalSpan = require("ui/widget/verticalspan")
 local WidgetContainer = require("ui/widget/container/widgetcontainer")
+local Layout = require("layout")
 local Finished = require("finished")
 local Stats = require("stats")
 local Widget = require("ui/widget/widget")
@@ -57,6 +58,11 @@ local CFG = {
     finished_cache_hours = 12,  -- sidecar 扫描结果缓存时长
     cache_titles = 60,          -- 缓存里最多保留多少本书名（渲染时要整份解析）
     tz_offset = 0,              -- start_time 与设备墙钟一致，真机上为 0；设 nil 则自动推断
+    -- 字号自适应：从大到小试，第一个"放得下"的档位胜出。
+    -- 放不下的判据见 layoutOnce 的返回值（截断 / 已读完行数）。
+    fscale_steps = { 1.30, 1.20, 1.10, 1.00, 0.90, 0.80, 0.70, 0.60 },
+    min_fin_rows = 2,           -- "已读完"至少要放得下几行，否则降档
+    gap_max_ratio = 1.6,        -- 区块间隙最多长到基准值的几倍，吸收不掉的归上下边距
 }
 -- =================================================================
 
@@ -259,16 +265,29 @@ end
 
 -- ============================ 画面 ============================
 
--- 字号一律用 KOReader 的命名档位（font.lua 的 sizemap），不写死数字：
--- getFace 内部按屏幕 DPI 做 scaleBySize，档位本身也跟着 KOReader 的字号体系走。
--- 官方 readerprogress.lua 就是这么干的（smallffont / ffont / largeffont）。
--- 只用 KOReader 的三档字号，且按"角色"固定分配，同一角色全篇一致：
---   强调(25) 只给统计大数字；正文(20) 给书名、日期这类主体内容；
---   辅助(15) 给标签、说明、明细、页脚。
+-- 三档字号 = KOReader 命名档位的原始设计尺寸（font.lua:90-92 的 sizemap）
+-- × 一个自适应系数 FSCALE，由 buildWidget 的 fit 循环设定。
+--
+-- getFace 的第二个参数是"未缩放的设计尺寸"，内部还会做 Screen:scaleBySize
+-- （font.lua:269-277），而 scaleBySize 是按屏幕短边 / 600 缩放、默认完全不看 DPI
+-- （ffi/framebuffer.lua:414-425）。所以这里写的不是像素，跨分辨率自动成立；
+-- FSCALE 只负责回答"这一屏内容在这台设备的这个方向上放不放得下"。
+-- 写死一组数字的问题不在跨分辨率（那是 scaleBySize 的事），而在于横屏、
+-- 用户把「屏幕 DPI」调大、以及内容变长时没有退路。
+--
+-- 仍然只用三档，且按"角色"固定分配，同一角色全篇一致：
+--   强调 只给统计大数字；正文 给书名、日期这类主体内容；
+--   辅助 给标签、说明、明细、页脚。
 -- 之前是哪里觉得不合适就单独调一处，屏幕上同时出现四五种大小，看着就乱。
-local function FACE_V() return Font:getFace("largeffont") end    -- 25 强调
-local function FACE_M() return Font:getFace("ffont") end         -- 20 正文
-local function FACE_L() return Font:getFace("smallffont") end    -- 15 辅助
+local BASE_V, BASE_M, BASE_L = 25, 20, 15   -- largeffont / ffont / smallffont
+local FSCALE = 1.0
+
+local function scaled(base)
+    return math.max(8, math.floor(base * FSCALE + 0.5))
+end
+local function FACE_V() return Font:getFace("largeffont", scaled(BASE_V)) end
+local function FACE_M() return Font:getFace("ffont",      scaled(BASE_M)) end
+local function FACE_L() return Font:getFace("smallffont", scaled(BASE_L)) end
 local FACE_S = FACE_L
 
 local function txt(s, face, max_width)
@@ -319,21 +338,32 @@ end
 -- 右边就空出一大块，看起来像左右边距不一样。
 local function cellRow(items, usable_w)
     local n = #items
-    if n == 0 then return VerticalGroup:new{} end
+    if n == 0 then return VerticalGroup:new{}, false end
     local cap_w = math.floor(usable_w / n)          -- 单块最大宽度，超了就截断
     local cells, widths, total = {}, {}, 0
+    local truncated = false
     for i, it in ipairs(items) do
         local c = cell(it[1], it[2], cap_w, it[3])
         cells[i] = c
         local ok, sz = pcall(function() return c:getSize() end)
         widths[i] = (ok and sz and sz.w) or 0
         total = total + widths[i]
+        -- 有没有哪一格被 cap_w 截成 "1234h5…"。isTruncated 走的是真实排版
+        -- （含 kerning 和 CJK 回退字体），比自己量宽度可靠（textwidget.lua:307-310）。
+        -- 截了就让外层的 fit 循环降一档字号重排：FSCALE 变小而 cap_w 不变，
+        -- 所以截断是单调消失的，循环必然收敛。
+        for _, w in ipairs(c) do
+            if type(w) == "table" and type(w.isTruncated) == "function" then
+                local ok_t, cut = pcall(function() return w:isTruncated() end)
+                if ok_t and cut then truncated = true end
+            end
+        end
     end
 
     local g = HorizontalGroup:new{ align = "top" }
     if n == 1 then
         table.insert(g, cells[1])
-        return g
+        return g, truncated
     end
     local space = usable_w - total
     local gap_w = math.floor(space / (n - 1))
@@ -347,7 +377,7 @@ local function cellRow(items, usable_w)
             })
         end
     end
-    return g
+    return g, truncated
 end
 
 -- 柱状曲线自绘：顺便画一条 1 小时参考虚线。
@@ -476,11 +506,12 @@ local function footerRow(usable_w)
     return centered(usable_w, txt(os.date("%Y-%m-%d %H:%M") .. batt, FACE_S()))
 end
 
-local function buildWidget()
-    local data = collect()
-    if not data then return nil end
-    local d = Stats.derive(data, os.time(), CFG)
-
+-- 按当前的 FSCALE 排一遍版。返回值供 fit 循环判断"放不放得下"：
+--   widget     排好的部件
+--   budget     留给"已读完"列表的高度预算（可能为负 = 溢出）
+--   fin_row_h  "已读完"一行占多高
+--   truncated  四列小块里有没有哪一格被截断
+local function layoutOnce(data, d)
     local W, H = Screen:getWidth(), Screen:getHeight()
     -- 留白按屏幕"短边"的 6%，不能按 getWidth()：横屏时宽度是长边，
     -- 按宽度取会白白吃掉本来就紧张的高度。下限用 KOReader 的
@@ -498,20 +529,22 @@ local function buildWidget()
         table.insert(root, sp)
     end
 
-    table.insert(root, cellRow({
+    local row1, cut1 = cellRow({
         { "今日", fmtHM(d.today) }, { "本周", fmtHM(d.week) },
         { "本月", fmtHM(d.month) }, { "今年", fmtHM(d.year) },
-    }, usable))
+    }, usable)
+    table.insert(root, row1)
     gap(16)
     table.insert(root, hrule(usable))
     gap(16)
 
-    table.insert(root, cellRow({
+    local row2, cut2 = cellRow({
         { "连续天数", tostring(d.streak) },
         { "有效日均", fmtHM(d.avg_active) },
         { "累计", fmtHours(d.total) },
         { "今日页数", tostring(d.pages_today), string.format("本周 %d 页", d.pages_week) },
-    }, usable))
+    }, usable)
+    table.insert(root, row2)
     gap(22)
 
     local curve, peak = curveWidget(d.curve, usable, H - pad * 2)
@@ -554,8 +587,11 @@ local function buildWidget()
     local footer_h = (ok_f and fh) or Screen:scaleBySize(30)
     root:resetLayout()
     local used_h = root:getSize().h
-    -- 12 是页脚上方的间距，也得从预算里扣，否则会顶出屏幕
+    -- 两个 12：一个是页脚上方的 gap(12)，一个是"已读完"列表和它上方标题之间的
+    -- 安全余量。都得从预算里扣，否则会顶出屏幕。
     local budget = H - pad * 2 - used_h - footer_h - Screen:scaleBySize(12) - Screen:scaleBySize(12)
+    -- 一行"已读完"占多高：口径必须和 finishedRows 里一致（正文档字高 + line_gap）
+    local fin_row_h = txt("2026-08", FACE_M()):getSize().h + Size.padding.large
     table.insert(root, finishedRows(fin_data, usable, math.max(0, budget)))
 
     gap(12)
@@ -578,7 +614,7 @@ local function buildWidget()
         end
     end
 
-    return CenterContainer:new{
+    local widget = CenterContainer:new{
         densestats = true,   -- 标记：用来验证屏保确实拿到了我们的部件
         dimen = Screen:getSize(),
         FrameContainer:new{
@@ -588,6 +624,32 @@ local function buildWidget()
             root,
         },
     }
+    return widget, budget, fin_row_h, (cut1 or cut2)
+end
+
+-- 一屏排不下就整体降字号重排。KOReader 官方处理"铺满一屏"就是这个套路：
+-- calendarview.lua:1305-1319 用最宽字符串当探针 while 循环降号，
+-- keyvaluepage.lua:492-501 从行高反推字号并封顶，menu.lua:135-141 封顶到
+-- "至少能显示一行"。这一条同时解决三件事：横屏、用户把「屏幕 DPI」调大、
+-- 以及内容变长——它不假设任何设备参数，只问"这次放不放得下"。
+local function buildWidget()
+    local data = collect()
+    if not data then return nil end
+    local d = Stats.derive(data, os.time(), CFG)
+
+    local t0 = os.clock()
+    local widget, step, tries = Layout.fitScale(CFG.fscale_steps, function(k)
+        FSCALE = k
+        local w, budget, fin_row_h, truncated = layoutOnce(data, d)
+        local fits = (not truncated) and budget >= CFG.min_fin_rows * fin_row_h
+        return fits, w
+    end)
+
+    if os.getenv("DENSESTATS_DEBUG") == "1" then
+        logger.info(string.format("densestats fit: FSCALE=%.2f tries=%d 耗时=%.1fms",
+            step or -1, tries or 0, (os.clock() - t0) * 1000))
+    end
+    return widget
 end
 
 -- ============================ 调试预览 ============================
