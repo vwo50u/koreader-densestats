@@ -87,7 +87,8 @@ Then:
 ```
 
 **Desktop builds have no sleep screen**, so the hook never fires. Use the plugin's own
-entry point: main menu → More tools → "预览：密集统计屏" (Preview). Tap to dismiss.
+On the device, just lock the screen. On desktop, where sleep is unavailable,
+start with DENSESTATS_AUTOSHOW=1 and the same widget pops up after six seconds.
 
 Building from source with `./kodev build` is not worth it for UI work — compiling
 koreader-base from scratch on macOS arm64 takes hours.

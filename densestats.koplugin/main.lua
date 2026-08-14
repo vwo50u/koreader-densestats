@@ -7,8 +7,10 @@ ui.statistics:onShowReaderProgress(true) 取 widget，本插件包住这个方�
 数据只读 statistics 插件的 statistics.sqlite3，不写。
 statistics 插件必须保持启用。
 
-调试：主菜单 → 更多工具 → 「预览：密集统计屏」可直接查看，无需真的睡眠
-（桌面/模拟器上睡眠屏幕功能不可用，只能用这个入口）。
+设备上想看效果，直接锁屏就是。
+桌面/模拟器上睡眠屏幕功能不可用，用 DENSESTATS_AUTOSHOW=1 启动，
+六秒后会自动弹出同一份部件（见 _maybeAutoShow）——这是纯开发用的口子，
+菜单里没有入口。
 --]]
 
 local Blitbuffer = require("ffi/blitbuffer")
@@ -969,8 +971,11 @@ local function buildWidget()
     return widget
 end
 
--- ============================ 调试预览 ============================
+-- ==================== 开发用预览（菜单里没有入口）====================
 
+-- 只由 DENSESTATS_AUTOSHOW=1 触发，用来在桌面上看一眼屏保长什么样——
+-- 桌面/模拟器不会真的进睡眠，没有别的办法走通这条渲染路径。
+-- 设备上不需要它：锁屏看到的就是同一份部件。
 local Preview = InputContainer:extend{}
 
 function Preview:init()
@@ -1031,8 +1036,6 @@ end
 -- （dispatcher.lua:656-662 判 nil 才写），所以每个实例都调一次是安全的，
 -- 官方模板（hello.koplugin/main.lua:23-28）就是在 init 里直接调。
 function DenseStats:onDispatcherRegisterActions()
-    Dispatcher:registerAction("densestats_preview",
-        { category = "none", event = "DenseStatsPreview", title = _("Preview dense stats screen"), general = true })
     Dispatcher:registerAction("densestats_rescan",
         { category = "none", event = "DenseStatsRescan", title = _("Rescan finished books"), general = true })
 end
@@ -1074,7 +1077,7 @@ function DenseStats:_hookStatistics()
     if not isCallable(stats.onShowReaderProgress) then
         logger.warn("densestats: onShowReaderProgress 不可调用（类型 "
                     .. type(stats.onShowReaderProgress) .. "），睡眠屏幕接管失败；"
-                    .. "菜单里的预览仍可用")
+                    .. "统计数据本身不受影响")
         return false
     end
     stats._densestats_wrapped = true
@@ -1120,11 +1123,6 @@ function DenseStats:onCloseWidget()
         UIManager:unschedule(rescan_task)
         rescan_scheduled = false
     end
-end
-
-function DenseStats:onDenseStatsPreview()
-    UIManager:show(Preview:new{})
-    return true
 end
 
 function DenseStats:onDenseStatsRescan()
@@ -1192,13 +1190,6 @@ function DenseStats:addToMainMenu(menu_items)
         keep_menu_open = true,
         callback = function()
             self:_rescanWithFeedback()
-        end,
-    }
-    menu_items.densestats_preview = {
-        text = "预览：密集统计屏",
-        sorting_hint = "more_tools",
-        callback = function()
-            UIManager:show(Preview:new{})
         end,
     }
 end

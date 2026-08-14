@@ -72,7 +72,8 @@ macOS 版 KOReader **不在 Releases 里**，要从 GitHub Actions 的构建产�
 ```
 
 **桌面平台没有睡眠屏幕功能**，所以钩子不会被触发。用插件自带的调试入口：
-主菜单 → 更多工具 → 「预览：密集统计屏」，点一下屏幕关闭。
+设备上直接锁屏即可。桌面上睡眠功能不可用，用 DENSESTATS_AUTOSHOW=1 启动，
+六秒后会自动弹出同一份部件。
 
 不建议从源码 `./kodev build` —— 本机缺 cmake / autoconf / nasm / luarocks，
 在 macOS arm64 上从零编译 koreader-base 是几小时起的活，调 UI 用不上。

@@ -54,7 +54,7 @@ log)
     ;;
 run)
     "$0" link || true
-    echo "启动 KOReader… 打开后走：主菜单 → 更多工具 → 预览：密集统计屏"
+    echo "启动 KOReader…（要看屏保长什么样，用 DENSESTATS_AUTOSHOW=1 启动）"
     "$BIN" 2>&1 | tee /tmp/densestats-run.log
     ;;
 *)
