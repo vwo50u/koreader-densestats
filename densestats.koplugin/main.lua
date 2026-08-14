@@ -324,6 +324,13 @@ local function saveCache(summary)
     -- 正好读到写了一半的文件就会 dofile 失败。LuaSettings 的 .old 回退兜不住这个：
     -- backup() 只在原文件 mtime 超过 60 秒时才做（luasettings.lua:252-267）。
     -- 同一文件系统内的 rename 是原子的，读者要么看到旧的完整文件、要么看到新的。
+    --
+    -- 两个副作用，知道就行，都不影响功能：
+    -- 一是 util.writeToFile 会把目标路径写成文件首行的注释，所以缓存文件里那行
+    -- 自述路径带着 ".new" 后缀（它只是个 Lua 注释）；
+    -- 二是 .old 备份从此不再产生——backup() 作用在临时文件上，随后就被删了。
+    -- 后者是有意的取舍：rename 保证了读者永远读不到半截文件，备份的意义本来
+    -- 就在于此，而它原先还有"原文件不满 60 秒就不备份"的空窗。
     local final, tmp = cachePath(), cachePath() .. ".new"
     local ok, err = pcall(function()
         local s = LuaSettings:open(tmp)
