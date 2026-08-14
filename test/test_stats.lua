@@ -33,6 +33,20 @@ local r = S.rowsOf({ {"a","b"}, {1,2} }, 2)
 ok(#r == 2 and r[1][1] == "a" and r[2][2] == 2, "列存转行存")
 ok(S.rowsOf({ {"a"} }, 3)[1][3] == nil, "列数不足补 nil")
 
+-- 第一列为 NULL 的情形。ljsqlite3 把 NULL 存成 nil，所以 res[1] 是带洞的数组，
+-- #res[1] 未定义（LuaJIT 上这里是 0）——只有 conn:exec 的第二个返回值可信。
+local nulled = { { nil }, { 42 } }
+ok(#S.rowsOf(nulled, 2) == 0, "不传行数时第一列为 NULL 会丢数据（记录现状）")
+local n1 = S.rowsOf(nulled, 2, 1)
+ok(#n1 == 1, "传了行数就不会丢", #n1)
+ok(n1[1][1] == nil and n1[1][2] == 42, "NULL 列读成 nil，其余列照常")
+-- 多行、第一列部分为 NULL
+local mixed = { { nil, "b" }, { 1, 2 } }
+local n2 = S.rowsOf(mixed, 2, 2)
+ok(#n2 == 2 and n2[1][1] == nil and n2[2][1] == "b" and n2[2][2] == 2,
+   "部分 NULL 也不影响后续行")
+ok(#S.rowsOf({ {"a","b"} }, 1, 2) == 2, "行数由参数决定，不由列长决定")
+
 print("== weekStartKey ==")
 -- 2026-08-10 是周一
 ok(S.weekStartKey(ts(2026,8,10), 2) == "2026-08-10", "周一当天就是周首",

@@ -27,15 +27,27 @@ end
 -- 解析单个 sidecar，返回 status, modified（都可能为 nil）
 -- 优先用字符串扫描：sidecar 里可能存着大量标注，整个 dofile 解析一遍又慢又没必要，
 -- 而且不必执行文件内容。扫不到再退回 loader。
+-- 返回 status, modified, doc_path（都可能为 nil）
 function M.readSidecar(path, loader)
     local f = io.open(path, "r")
     if f then
         local text = f:read("*a")
         f:close()
         if text then
-            local status = text:match('%["status"%]%s*=%s*"([^"]*)"')
-            local modified = text:match('%["modified"%]%s*=%s*"([^"]*)"')
-            if status then return status, modified end
+            -- 只在 summary 块**之后**找，不在全文里找。sidecar 是按键名排序输出的
+            -- （KOReader 的 dump.lua 走 orderedPairs），annotations 和 doc_props
+            -- 都排在 summary 前面，而这两块装的是用户书摘和出版方简介等任意文本——
+            -- 里面偶然出现 ["status"] = "…" 字样就会被先命中，而且是静默的错值。
+            local at = text:find('%["summary"%]', 1, false)
+            if at then
+                local scope = text:sub(at)
+                local status = scope:match('%["status"%]%s*=%s*"([^"]*)"')
+                if status then
+                    return status,
+                           scope:match('%["modified"%]%s*=%s*"([^"]*)"'),
+                           text:match('%["doc_path"%]%s*=%s*"([^"]*)"')
+                end
+            end
             if not text:find("summary", 1, true) then return nil end
         end
     end
@@ -44,22 +56,52 @@ function M.readSidecar(path, loader)
     if not ok or type(t) ~= "table" then return nil end
     local s = t.summary
     if type(s) ~= "table" then return nil end
-    return s.status, s.modified
+    return s.status, s.modified, t.doc_path
 end
 
+-- hash 存放模式下 .sdr 目录名就是书的 md5，拿它当书名会在屏幕上显示成
+-- 一长串十六进制。这种情况下退回 sidecar 里记的 doc_path，取文件名。
+function M.titleFrom(sdr_name, doc_path)
+    if doc_path and #sdr_name == 32 and sdr_name:match("^%x+$") then
+        local base = doc_path:match("([^/]+)$")
+        if base and base ~= "" then
+            return base:match("^(.*)%.[^.]*$") or base
+        end
+    end
+    return sdr_name
+end
+
+-- 绝不进入的目录。前四个是系统伪文件系统；/mnt/base-us 是 Kindle 上 /mnt/us
+-- 的另一个视图——同一份文件系统挂两次，不排除就会把每本书数两遍。
+-- 这份名单抄自官方的文件搜索（filemanagerfilesearcher.lua 的 sys_folders）。
+M.skip_dirs = {
+    ["/dev"] = true, ["/proc"] = true, ["/sys"] = true, ["/mnt/base-us"] = true,
+}
+
+-- 名字层面的排除。官方 filechooser.lua 的 exclude_dirs 里这几个是非点开头的，
+-- 只判"点开头"漏得掉：回收站里的残留 .sdr 会被算成已读完的书。
+M.skip_names = {
+    ["RECYCLED"] = true, ["RECYCLER"] = true, ["$RECYCLE.BIN"] = true,
+    ["System Volume Information"] = true, ["KOBOeReader"] = true,
+}
+
 -- 递归扫描目录，收集所有 sidecar 路径。
--- max_depth 防止在整个文件系统上爬；遇到 .sdr 目录就不再往下钻。
+-- max_depth 防止在整个文件系统上爬。注意 .sdr 目录本身要钻进去——sidecar 就在里面。
 function M.collectSidecars(root, lfs, max_depth, out)
     out = out or {}
     root = M.normDir(root)
-    if root == "" then return out end
-    max_depth = max_depth or 6
+    if root == "" or M.skip_dirs[root] then return out end
+    -- 默认 10 层而不是 6：集中存放模式下 sidecar 路径是
+    -- "docsettings 根 + 书的绝对路径"，Android 上 /storage/emulated/0/Books/子目录/
+    -- 一层就吃掉 5 层，6 层会静默漏书。
+    max_depth = max_depth or 10
     if max_depth < 0 then return out end
     -- lfs.dir 返回 (迭代器, 目录对象)，两个都要接住，否则迭代器拿不到状态
     local ok, iter, dir_obj = pcall(lfs.dir, root)
     if not ok or not iter then return out end
     for name in iter, dir_obj do
-        if name ~= "." and name ~= ".." and name:sub(1, 1) ~= "." then
+        if name ~= "." and name ~= ".." and name:sub(1, 1) ~= "."
+           and not M.skip_names[name] then
             local full = root .. "/" .. name
             local attr = lfs.attributes(full)
             if attr and attr.mode == "directory" then
@@ -76,22 +118,30 @@ end
 -- title 从 sidecar 路径的 .sdr 目录名反推（够用，且不必解析整个 metadata）
 function M.summarize(roots, lfs, loader)
     local months, titles, total = {}, {}, 0
-    local seen, seen_root = {}, {}
+    -- 两张表，别合成一张：seen_path 记"这个 sidecar 文件已经读过"，
+    -- seen_book 记"这本书已经计过数"。合用一张的话，没有 doc_path 时
+    -- 书的键就等于文件路径，而它刚刚才被置位，于是一本都数不出来。
+    local seen_path, seen_book, seen_root = {}, {}, {}
     for _, raw_root in ipairs(roots or {}) do
       local root = M.normDir(raw_root)
       if root ~= "" and not seen_root[root] then
         seen_root[root] = true
         for _, path in ipairs(M.collectSidecars(root, lfs)) do
-            if not seen[path] then
-                seen[path] = true
-                local status, modified = M.readSidecar(path, loader)
-                if status == "complete" then
+            if not seen_path[path] then
+                seen_path[path] = true
+                local status, modified, doc_path = M.readSidecar(path, loader)
+                -- 书的去重键优先用 doc_path：同一本书可以在 doc / dir / hash
+                -- 三个位置同时留下 sidecar（切换过存放位置而旧的还没被清），
+                -- 只按文件路径去重会把它数两遍。
+                local key = doc_path or path
+                if status == "complete" and not seen_book[key] then
+                    seen_book[key] = true
                     total = total + 1
                     local m = modified and tostring(modified):sub(1, 7) or "?"
                     months[m] = (months[m] or 0) + 1
                     local dir = path:match("([^/]+)%.sdr/[^/]+$") or path
                     titles[#titles + 1] = {
-                        title = dir,
+                        title = M.titleFrom(dir, doc_path),
                         month = m,
                         date = modified and tostring(modified) or "",
                     }

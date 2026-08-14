@@ -29,11 +29,18 @@ function M.fmtHM(sec)
     return string.format("%dh", h)
 end
 
--- lua-ljsqlite3 的 exec 结果按列存，转成行数组
-function M.rowsOf(res, ncol)
+-- lua-ljsqlite3 的 exec 结果按列存，转成行数组。
+--
+-- nrows 要由调用方从 conn:exec 的第二个返回值传进来，别用 #res[1]：结果集里
+-- NULL 存成 nil，第一列一旦有 NULL，那一列就是带洞的数组，长度未定义，整块数据
+-- 会静默消失。空库时 `SELECT SUM(total_read_time) FROM book` 返回的正是 NULL，
+-- 书名缺失时 `SELECT b.title, ...` 也是。官方同样拿这个返回值当行数
+-- （statistics.koplugin/main.lua:2807/2811）。
+-- 不传时退回 #res[1]，只为让不涉及 NULL 的老调用方保持原样。
+function M.rowsOf(res, ncol, nrows)
     local out = {}
     if type(res) ~= "table" or type(res[1]) ~= "table" then return out end
-    for i = 1, #res[1] do
+    for i = 1, (tonumber(nrows) or #res[1]) do
         local r = {}
         for c = 1, ncol do
             r[c] = res[c] and res[c][i] or nil
