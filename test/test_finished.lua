@@ -56,12 +56,19 @@ ok(s2.total == s1.total, "带尾斜杠的同一目录不重复计数", s2.total 
 local s3 = F.summarize({ "./test", "./test/fixtures" }, lfs)
 ok(s3.total == s1.total, "父目录与子目录同时给出也不重复", s3.total)
 
-print("== summary 块外的干扰文本 ==")
--- 夹具里 annotations 的书摘正文中混入了 ["status"] = "complete"，
--- 而真正的 summary.status 是 abandoned。全文正则会先命中书摘，读出错值。
-local st, mt = F.readSidecar("./test/.hash-fixtures/ab/abcdef0123456789abcdef0123456789.sdr/metadata.epub.lua")
-ok(st == "abandoned", "只在 summary 块之后取 status，不被书摘带偏", tostring(st))
-ok(mt == "2026-05-04", "modified 同样取自 summary 块", tostring(mt))
+print("== 书摘正文里的诱饵 ==")
+-- 夹具的 annotations 正文里同时埋了假的 ["summary"] = { ["status"] = "complete" }
+-- 和假的 ["doc_path"]，而且假 summary 排在真的顶层 summary **之前**。
+-- 真值是 abandoned + /mnt/us/documents/围城.epub。
+-- 三种写法会在这里翻车：全文匹配 status；只按键名 ["summary"] 定位作用域；
+-- 全文匹配 doc_path。判别靠的是顶层键固定缩进 4 格。
+local st, mt, dp = F.readSidecar("./test/.hash-fixtures/ab/abcdef0123456789abcdef0123456789.sdr/metadata.epub.lua")
+ok(st == "abandoned", "status 取自顶层 summary，不被诱饵带偏", tostring(st))
+ok(mt == "2026-05-04", "modified 同样取自顶层 summary", tostring(mt))
+ok(dp == "/mnt/us/documents/围城.epub", "doc_path 也只取顶层的", tostring(dp))
+-- 这本是 abandoned，所以不该被计入"已读完"
+local sa = F.summarize({ "./test/.hash-fixtures/ab" }, lfs)
+ok(sa.total == 0, "诱饵没让 abandoned 的书被算成读完", sa.total)
 
 print("== hash 存放模式 ==")
 local sh = F.summarize({ "./test/.hash-fixtures" }, lfs)

@@ -34,18 +34,27 @@ function M.readSidecar(path, loader)
         local text = f:read("*a")
         f:close()
         if text then
-            -- 只在 summary 块**之后**找，不在全文里找。sidecar 是按键名排序输出的
-            -- （KOReader 的 dump.lua 走 orderedPairs），annotations 和 doc_props
-            -- 都排在 summary 前面，而这两块装的是用户书摘和出版方简介等任意文本——
-            -- 里面偶然出现 ["status"] = "…" 字样就会被先命中，而且是静默的错值。
-            local at = text:find('%["summary"%]', 1, false)
+            -- 只认**顶层**的 ["summary"] = {，而不是"文件里任何一处 summary 字样"。
+            --
+            -- sidecar 是按键名排序输出的（KOReader 的 dump.lua 走 orderedPairs），
+            -- annotations 和 doc_props 都排在 summary 前面，而这两块装的是用户书摘
+            -- 和出版方简介等任意文本。只按键名定位的话，书摘正文里出现一句
+            -- 'see ["summary"] ... ["status"] = "complete"' 就能把作用域锚在假位置上，
+            -- 随后读出的状态是错的，而且完全静默。
+            --
+            -- 判别依据是缩进：dump.lua 每层缩 4 格，所以顶层键必然是"行首 + 恰好
+            -- 4 个空格"，而嵌套进 annotations 的正文至少缩 8 格，顶不上来。
+            local at = text:find('\n    %["summary"%]%s*=%s*{')
             if at then
                 local scope = text:sub(at)
                 local status = scope:match('%["status"%]%s*=%s*"([^"]*)"')
                 if status then
+                    -- doc_path 也必须限定在顶层。它现在既是跨存放位置的去重键，
+                    -- 又是 hash 模式下的书名来源——被书摘里的假值顶掉的话，
+                    -- 两本不同的书会被合并成一本，计数直接少。
                     return status,
                            scope:match('%["modified"%]%s*=%s*"([^"]*)"'),
-                           text:match('%["doc_path"%]%s*=%s*"([^"]*)"')
+                           text:match('\n    %["doc_path"%]%s*=%s*"([^"]*)"')
                 end
             end
             if not text:find("summary", 1, true) then return nil end
@@ -71,7 +80,7 @@ function M.titleFrom(sdr_name, doc_path)
     return sdr_name
 end
 
--- 绝不进入的目录。前四个是系统伪文件系统；/mnt/base-us 是 Kindle 上 /mnt/us
+-- 绝不进入的目录。前三个是系统伪文件系统；/mnt/base-us 是 Kindle 上 /mnt/us
 -- 的另一个视图——同一份文件系统挂两次，不排除就会把每本书数两遍。
 -- 这份名单抄自官方的文件搜索（filemanagerfilesearcher.lua 的 sys_folders）。
 M.skip_dirs = {

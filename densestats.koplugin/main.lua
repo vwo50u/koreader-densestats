@@ -132,10 +132,12 @@ local function collect()
         return nil
     end
     last_db_bytes = db_attr.size or -1
-    -- 用 "rw" 而不是默认的 "rwc"：上面的存在性检查挡不住 0 字节或损坏的文件被
-    -- rwc 重新初始化成空库。不用 "ro" 是实测过的——这个库跑 WAL，而 statistics
-    -- 是查完就关连接、顺带 checkpoint 掉 -shm，所以熄屏时 -shm 通常不存在，
-    -- 此时只读模式会直接失败（unable to open database file）。
+    -- 用 "rw" 而不是默认的 "rwc"：单纯是"我们只读别人的库，不该带上创建语义"。
+    -- （别把它当安全网：SQLite 把 0 字节文件也视为合法的空库，rwc 并不会
+    -- "重建"什么，两种模式在损坏文件上的结局一样——查表失败、pcall 兜住、返回 nil。）
+    -- 不用 "ro" 是实测过的：这个库跑 WAL，而 statistics 查完就关连接、顺带
+    -- checkpoint 掉 -shm，所以熄屏时 -shm 通常不存在，只读模式此时会直接失败
+    -- （unable to open database file）。
     local ok_conn, conn = pcall(SQ3.open, db_path, "rw")
     if not ok_conn or not conn then
         logger.warn("densestats: 打开数据库失败:", conn)
@@ -316,14 +318,26 @@ local function saveCache(summary)
         titles[i] = { title = t.title, month = t.month, date = t.date or "" }
     end
 
+    -- 先写临时文件再 rename 覆盖过去。LuaSettings:flush 内部是
+    -- io.open(path, "wb")（util.lua:1130），**原地截断**，不是原子替换；
+    -- 而扫描现在跑在子进程里，父进程随时可能在熄屏路径上 loadCache()，
+    -- 正好读到写了一半的文件就会 dofile 失败。LuaSettings 的 .old 回退兜不住这个：
+    -- backup() 只在原文件 mtime 超过 60 秒时才做（luasettings.lua:252-267）。
+    -- 同一文件系统内的 rename 是原子的，读者要么看到旧的完整文件、要么看到新的。
+    local final, tmp = cachePath(), cachePath() .. ".new"
     local ok, err = pcall(function()
-        local s = LuaSettings:open(cachePath())
+        local s = LuaSettings:open(tmp)
         s:saveSetting("ts", os.time())
         s:saveSetting("total", summary.total)
         s:saveSetting("months", summary.months)
         s:saveSetting("titles", titles)
         s:flush()
     end)
+    if ok then
+        ok, err = os.rename(tmp, final)
+        os.remove(tmp)              -- rename 成功时这是空操作
+        os.remove(tmp .. ".old")    -- flush 可能给临时文件也留了个备份
+    end
     -- 静默失败的后果很重（见上），必须让日志里看得见
     if not ok then
         logger.warn("densestats: 写缓存失败，已读完列表会每次开书重扫:", err)
@@ -391,14 +405,24 @@ end
 -- （ffi/util.lua:344-348 的注释写明了这一点），省掉 coverbrowser 那一整套
 -- isSubProcessDone 轮询 + 看门狗。子进程自己把缓存写出来，父进程下次
 -- loadCache() 自然就读到了，不需要任何回传通道。
+-- 已经派出去的子进程大约干到什么时候。double_fork 之后子进程被 init 收养，
+-- 我们拿不到可 waitpid 的 pid，只能用时间兜住"别再派一个"。
+-- 需要它是因为 rescan_scheduled 在任务**触发**时就清零了，而不是子进程结束时：
+-- 首次安装（无缓存 → 1 秒后就扫）叠加一次挂起/唤醒或 UI 重建，就会在缓存还没
+-- 写出来的时候再派一个，两个子进程写同一个文件。
+local rescan_busy_until = 0
+
 local function rescanInBackground()
-    local ok, pid = pcall(ffiUtil.runInSubProcess, function()
+    local ok, pid, err = pcall(ffiUtil.runInSubProcess, function()
         scanAndSave()
     end, false, true)
+    -- runInSubProcess 失败时返回的是 (false, errmsg)，所以要接第三个值，
+    -- 否则日志里只会打印一个光秃秃的 false，看不出原因。
     if not ok or not pid then
-        logger.warn("densestats: 起子进程失败，退回同步扫描:", pid)
+        logger.warn("densestats: 起子进程失败，退回同步扫描:", err or pid)
         return scanAndSave()
     end
+    rescan_busy_until = os.time() + 600
     logger.info("densestats: sidecar 扫描已交给子进程")
     return nil
 end
@@ -407,6 +431,7 @@ local rescan_scheduled = false
 local rescan_task              -- 存下来才能 unschedule
 local function maybeRescanLater()
     if rescan_scheduled then return end   -- ReaderUI 与 FileManager 各有一个插件实例
+    if os.time() < rescan_busy_until then return end   -- 上一个子进程多半还在跑
     local cache = loadCache()
     if cache and (os.time() - (cache.ts or 0)) < CFG.finished_cache_hours * 3600 then return end
     rescan_scheduled = true
@@ -901,10 +926,13 @@ local function buildWidget()
     local t_layout = time.now()
     -- 从"上次胜出的档位再大一档"开始试：命中就一轮结束，内容变短时也能一次
     -- 升一档地回去，不会被永久钉在小字号上。
-    -- 没胜出的那几棵树必须显式 free()：TextWidget 持有 xtext 的 C 侧 malloc 对象
+    -- 没胜出的那几棵树显式 free()：TextWidget 持有 xtext 的 C 侧 malloc 对象
     -- （textwidget.lua:190），LuaJIT 的 GC 看不见那些字节、不会因此被触发，而这段
     -- 跑在熄屏路径上。官方在完全相同的字号探针循环里也是逐轮 free
     -- （calendarview.lua:1314/1318、keyvaluepage.lua:635-636）。
+    -- 说清代价的量级，免得后人以为这是致命问题：free() 只丢掉 _xtext 并把
+    -- _updated 置回 false，下次用到会自动重建（textwidget.lua:380-394 / 90-94），
+    -- 所以漏 free 的后果是"C 侧内存拖到不确定的将来才还"，不是崩溃或画不出来。
     -- 放在下一轮开头而不是当场放，是因为回调不知道自己是不是最后一轮——
     -- 全都放不下时 fitScale 会把最后一棵当兜底返回，当场 free 就会返回一棵死树。
     local pending_free
