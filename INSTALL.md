@@ -2,15 +2,18 @@
 
 ## 复制什么
 
-只复制 `densestats.koplugin` 这一个文件夹里的 4 个文件：
+整个 `densestats.koplugin` 文件夹拷过去就行，里面是 5 个文件：
 
 ```
 densestats.koplugin/
 ├── _meta.lua
 ├── main.lua
+├── layout.lua
 ├── stats.lua
 └── finished.lua
 ```
+
+一个都不能少：`main.lua` 会 `require` 另外三个，缺了 `layout.lua` 插件直接起不来。
 
 **不要复制**仓库里的其他东西：`test/`、`dev.sh`、`sql/`、`.testdata/`、
 `statistics.sqlite3`（那是从设备上拷出来的副本，回拷会覆盖真实统计数据）。
