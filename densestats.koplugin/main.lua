@@ -85,13 +85,19 @@ local fmtHM, rowsOf = Stats.fmtHM, Stats.rowsOf
 
 -- ============================ 取数 ============================
 
+-- 上次 collect() 时数据库有多大。查询耗时几乎只跟这个数走（三条 SQL 里两条要扫
+-- page_stat_data），日志里带上它，才能把"这台设备慢"和"这个库大"分开看。
+local last_db_bytes = -1
+
 local function collect()
     local db_path = DataStorage:getSettingsDir() .. "/statistics.sqlite3"
     -- 不存在就别开：SQ3.open 会凭空建一个空库，后面查表全是错
-    if not lfs.attributes(db_path, "mode") then
+    local db_attr = lfs.attributes(db_path)
+    if not db_attr then
         logger.warn("densestats: statistics.sqlite3 不存在:", db_path)
         return nil
     end
+    last_db_bytes = db_attr.size or -1
     local ok_conn, conn = pcall(SQ3.open, db_path)
     if not ok_conn or not conn then
         logger.warn("densestats: 打开数据库失败:", conn)
@@ -185,8 +191,14 @@ local function loadCache()
 end
 
 local function saveCache(summary)
-    local f = io.open(cachePath(), "w")
-    if not f then return end
+    local f, open_err = io.open(cachePath(), "w")
+    -- 这里静默失败的后果很重：loadCache() 会永远返回 nil，maybeRescanLater 的
+    -- 12 小时节流就永远不生效，退化成"每次开书 1 秒后全库重扫一遍 sidecar"——
+    -- 一个纯粹跑在亮屏路径上的后台活儿。必须让日志里看得见。
+    if not f then
+        logger.warn("densestats: 写缓存失败，已读完列表会每次开书重扫:", open_err)
+        return
+    end
     f:write("return {\n  ts = ", tostring(os.time()), ",\n  total = ", tostring(summary.total), ",\n  months = {\n")
     for m, n in pairs(summary.months) do
         f:write(string.format("    [%q] = %d,\n", m, n))
@@ -236,12 +248,18 @@ end
 
 -- 真正的扫描：只在开书之后延迟触发，或菜单里手动触发。
 local function rescanFinished()
+    -- 全库递归 + 每个 sidecar 读全文，是这个插件最贵的单次动作，而且同步跑在
+    -- UI 主线程上（scheduleIn 的任务就是在事件循环里直接调的）。计时必须留着，
+    -- 否则"12 小时一次"到底是 200ms 还是 20s，只能靠猜。
+    local t0 = time.now()
     local ok, summary = pcall(Finished.summarize, scanRoots(), lfs)
     if not ok then
         logger.warn("densestats: sidecar scan failed:", summary)
         return nil
     end
     saveCache(summary)
+    logger.info(string.format("densestats: 扫描 sidecar 耗时 %.0fms，已读完 %d 本",
+        time.to_ms(time.since(t0)), summary.total or -1))
     return summary
 end
 
@@ -699,33 +717,51 @@ end
 -- keyvaluepage.lua:492-501 从行高反推字号并封顶，menu.lua:135-141 封顶到
 -- "至少能显示一行"。这一条同时解决三件事：横屏、用户把「屏幕 DPI」调大、
 -- 以及内容变长——它不假设任何设备参数，只问"这次放不放得下"。
+-- 计时用单调墙钟，不能用 os.clock()：后者是进程 CPU 时间，看不见阻塞 I/O，
+-- 而这条路径上 collect() 要读数据库、getFinished() 要 dofile 读缓存文件，
+-- 主要成本恰恰是磁盘读。桌面有 page cache 所以无感，真机 eMMC 冷读时
+-- os.clock() 会持续低估。
+--
+-- 分段计时，而且是无条件 logger.info（不挂在 DENSESTATS_DEBUG 后面）：
+-- 这段代码在每次熄屏时跑一遍，而且跑在设备还醒着的时候
+-- （kindle/device.lua 里 Screensaver:show() 排在 powerd:beforeSuspend() 之前），
+-- 所以它的开销记在"亮屏"账上。要判断这个插件对续航的实际影响，
+-- 唯一的办法就是让真机把每次的耗时写进 crash.log，估算代替不了。
+-- 原来的计时起点在 collect() 之后，SQL 和数据库冷读整个是盲区。
 local function buildWidget()
+    local t_begin = time.now()
     local data = collect()
+    local ms_sql = time.to_ms(time.since(t_begin))
     if not data then return nil end
-    local d = Stats.derive(data, os.time(), CFG)
-    -- 已读完列表也只读一次：loadCache 是 dofile，重排 8 轮就解析 8 遍，
-    -- 而这跑在入睡路径上（同 collect 外提的理由）
-    -- 计时用单调墙钟，不能用 os.clock()：后者是进程 CPU 时间，看不见阻塞 I/O，
-    -- 而 getFinished() 内部是 dofile 读缓存文件，主要成本恰恰是磁盘读。
-    -- 桌面有 page cache 所以无感，真机 eMMC 冷读时 os.clock() 会持续低估。
-    local t0 = time.now()
-    local fin_data = getFinished()
 
+    local t_derive = time.now()
+    local d = Stats.derive(data, os.time(), CFG)
+    local ms_derive = time.to_ms(time.since(t_derive))
+
+    -- 已读完列表只读一次：loadCache 是 dofile，重排 8 轮就解析 8 遍，
+    -- 而这跑在入睡路径上（同 collect 外提的理由）
+    local t_cache = time.now()
+    local fin_data = getFinished()
+    local ms_cache = time.to_ms(time.since(t_cache))
+
+    local t_layout = time.now()
     local widget, step, tries = Layout.fitScale(CFG.fscale_steps, function(k)
         FSCALE = k
         local w, budget, fin_row_h, truncated = layoutOnce(data, d, fin_data)
         local fits = (not truncated) and budget >= CFG.min_fin_rows * fin_row_h
         return fits, w
     end)
+    local ms_layout = time.to_ms(time.since(t_layout))
 
-    if os.getenv("DENSESTATS_DEBUG") == "1" then
-        -- fin= 是回归哨兵：只看别的数字的话，fin_data 没送到（传了 nil）时
-        -- 每个字段都会一字不差，这个回归模式完全是盲区。
-        -- nil 记 -1，好和"有缓存但列表为空"的 0 区分开。
-        logger.info(string.format("densestats fit: FSCALE=%.2f tries=%d fin=%d 耗时=%.1fms",
-            step or -1, tries or 0, fin_data and #(fin_data.titles or {}) or -1,
-            time.to_ms(time.since(t0))))
-    end
+    -- fin= 是回归哨兵：只看别的数字的话，fin_data 没送到（传了 nil）时
+    -- 每个字段都会一字不差，这个回归模式完全是盲区。
+    -- nil 记 -1，好和"有缓存但列表为空"的 0 区分开。
+    logger.info(string.format(
+        "densestats build: 合计 %.0fms = SQL %.0f + 汇总 %.0f + 缓存 %.0f + 排版 %.0f"
+        .. " | 排版 %d 轮 FSCALE=%.2f | 库 %.1fMB | fin=%d",
+        time.to_ms(time.since(t_begin)), ms_sql, ms_derive, ms_cache, ms_layout,
+        tries or 0, step or -1, last_db_bytes / 1048576,
+        fin_data and #(fin_data.titles or {}) or -1))
     return widget
 end
 
@@ -768,7 +804,7 @@ function DenseStats:init()
     end
     self:_maybeAutoShow()
     maybeRescanLater()
-    self:_hookStatistics()
+    self:_hookStatisticsLater()
 end
 
 -- 睡眠屏幕接管点（对 KOReader 2026.07 核实过）：
@@ -776,9 +812,28 @@ end
 -- 所以包 ReaderStatistics 的实例方法：get_widget 为真（屏保调用）时返回我们的
 -- widget，为假（菜单调用）时原样走官方逻辑。
 --
--- 时机很关键：插件按目录名字母序实例化，densestats 排在 statistics 前面，
--- 所以 init() 跑的时候 self.ui.statistics 还不存在，在那里挂钩子必然落空
--- （症状：菜单预览正常，屏保却没被接管）。onReaderReady 时才保证已经就绪。
+-- 时机很关键：插件按目录路径字母序实例化（pluginloader.lua 里
+-- table.sort(..., v1.path < v2.path)），densestats 排在 statistics 前面，
+-- 而两个 UI 都是"先 createPluginInstance（跑 init()）再 registerModule"
+-- （filemanager.lua:418-429、readerui.lua:463-476），所以 init() 里
+-- self.ui.statistics 必然还不存在，在那儿挂钩子一定落空。
+--
+-- 原来靠 onReaderReady 补挂，但那是 ReaderUI 独有的事件（readerui.lua:517），
+-- FileManager 从不广播它 —— 于是在文件浏览器里锁屏永远走不到我们的屏，
+-- 而是回退成内置逻辑（症状：显示回之前的壁纸）。
+-- registerPostInitCallback 是两种 UI 下唯一对称、且保证"全部模块已注册"
+-- 的时机（filemanager.lua:391/434、readerui.lua:106/484）。
+function DenseStats:_hookStatisticsLater()
+    local ui = self.ui
+    -- postInitCallback 跑完会被置 nil，那之后再 register 会往 nil 里 insert 直接崩；
+    -- 真遇到这种时序就当场试一次，至少 ReaderUI 那条路还有 onReaderReady 兜底。
+    if ui and isCallable(ui.registerPostInitCallback) and ui.postInitCallback then
+        ui:registerPostInitCallback(function() self:_hookStatistics() end)
+    else
+        self:_hookStatistics()
+    end
+end
+
 function DenseStats:_hookStatistics()
     local stats = self.ui and self.ui.statistics
     if not stats then return false end
