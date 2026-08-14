@@ -215,8 +215,17 @@ local function collect()
                   FROM page_stat_data WHERE start_time > 0);
     ]], off), 2)[1]
     if totals then
-        data.total_all = tonumber(totals[1]) or 0
-        data.active_days_all = tonumber(totals[2]) or 0
+        -- 千万别写成 `or 0`。SUM 忽略 NULL，全表 total_read_time 都是 NULL 时它
+        -- 返回 NULL；强行折成 0 会把 stats.lua 里"没有全量汇总就退回按窗口算"
+        -- 那条回退路径彻底封死，屏幕上的累计时长和有效日均直接变成 0，
+        -- 而逐日明细里明明是有数据的。留 nil 才走得到回退。
+        -- 两个字段必须同进同退：只回退其中一个的话，会拿窗口内的时长去除以
+        -- 全量天数，有效日均会被系统性低估。
+        local all = tonumber(totals[1])
+        if all then
+            data.total_all = all
+            data.active_days_all = tonumber(totals[2]) or 0
+        end
     end
 
     -- 当前在读 = 最近一条记录所属的那本。
@@ -233,19 +242,26 @@ local function collect()
     if last then
         local id = tonumber(last[1]) or 0
         local page, pages = tonumber(last[2]) or 0, tonumber(last[3]) or 0
+        -- COUNT(*) 是用来分辨"没有匹配的书"的。没有 GROUP BY 的聚合查询即使
+        -- 零匹配也照样返回一行（各列为 NULL），光看 title 是 nil 分不出
+        -- "book 表里没有这本书"和"这本书没有书名元数据"——前者该整块不显示，
+        -- 后者该显示 "?" 加上正确的页码。SQLite 默认不强制外键，孤儿 id_book
+        -- 是可能出现的。
         local cur = queryRows(conn, string.format([[
-            SELECT b.title, SUM(MIN(p.duration, %d))
+            SELECT b.title, SUM(MIN(p.duration, %d)), COUNT(*)
             FROM page_stat_data p JOIN book b ON b.id = p.id_book
             WHERE p.id_book = %d;
-        ]], cap, id), 2)[1]
-        data.current = {
-            title = tostring((cur and cur[1]) or "?"),
-            sec   = tonumber(cur and cur[2]) or 0,
-            page  = page,
-            pages = pages,
-            -- 夹到 1：记录当时的 total_pages 比当前页码小的话（换过字号）会超 100%
-            frac  = pages > 0 and math.min(page / pages, 1) or 0,
-        }
+        ]], cap, id), 3)[1]
+        if cur and (tonumber(cur[3]) or 0) > 0 then
+            data.current = {
+                title = tostring(cur[1] or "?"),
+                sec   = tonumber(cur[2]) or 0,
+                page  = page,
+                pages = pages,
+                -- 夹到 1：记录当时的 total_pages 比当前页码小的话（换过字号）会超 100%
+                frac  = pages > 0 and math.min(page / pages, 1) or 0,
+            }
+        end
     end
 
     end
