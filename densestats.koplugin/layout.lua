@@ -68,18 +68,25 @@ end
 -- 这是 KOReader 官方的套路（calendarview.lua:1307-1319 的探针降号循环、
 -- keyvaluepage.lua:501 的从行高反推字号并封顶）。
 --
+-- start_idx 是"从第几档开始试"。默认 1，行为与从前完全一致。
+-- 传它进来是为了记住上一次胜出的档位：这一屏的内容在相邻两次之间几乎不变，
+-- 每次都从最大档一路降下来，等于把同一份排版白算好几遍——而排版是要走
+-- FreeType 排字的，在真机上不便宜。调用方传 上次档位-1（先试大一档），
+-- 所以内容变短时也能一次升一档地回去，不会被永久钉在小字号上。
+--
 -- steps: 从大到小的候选系数数组
 -- probe(step) -> ok(boolean), payload
--- 返回 payload, 选中的 step, 实际试了几次
-function M.fitScale(steps, probe)
+-- 返回 payload, 选中的 step, 这次试了几轮, 选中档位的下标
+function M.fitScale(steps, probe, start_idx)
     steps = steps or {}
     local n = #steps
+    local first = math.max(1, math.min(tonumber(start_idx) or 1, n))
     local payload, step
-    for i = 1, n do
+    for i = first, n do
         local ok
         ok, payload = probe(steps[i])
         step = steps[i]
-        if ok or i == n then return payload, step, i end
+        if ok or i == n then return payload, step, i - first + 1, i end
     end
     return nil, nil, 0
 end

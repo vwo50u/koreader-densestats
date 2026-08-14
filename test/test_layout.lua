@@ -93,5 +93,29 @@ ok(#tried == 3, "兜底也不会试超过档位数", #tried)
 local p4, s4, n4 = L.fitScale({}, mkprobe(function() return true end))
 ok(p4 == nil and s4 == nil and n4 == 0, "空档位表返回 nil，不崩")
 
+print("== fitScale: 从指定档位起试（记住上次结果）==")
+
+-- 第四个返回值是选中档位的下标，调用方靠它记住"上次落在哪一档"
+local _, _, _, i1 = L.fitScale({ 1.3, 1.2, 1.1 }, mkprobe(function(k) return k <= 1.2 end))
+ok(i1 == 2, "返回选中档位的下标", tostring(i1))
+
+-- 从第 3 档起试：前两档根本不该被探测
+local p5, s5, n5 = L.fitScale({ 1.3, 1.2, 1.1 }, mkprobe(function() return true end), 3)
+ok(p5 == "payload@1.1" and s5 == 1.1, "从指定档位开始", tostring(p5))
+ok(#tried == 1 and tried[1] == 1.1, "跳过前面的档位，一轮结束", #tried)
+ok(n5 == 1, "tries 是本次试的轮数，不是绝对下标", tostring(n5))
+
+-- 起点落在能通过的档位之前时，仍然要往下降到通过为止
+local p6, s6, n6 = L.fitScale({ 1.3, 1.2, 1.1 }, mkprobe(function(k) return k <= 1.1 end), 2)
+ok(p6 == "payload@1.1" and s6 == 1.1 and n6 == 2, "从第 2 档起降到第 3 档", tostring(n6))
+
+-- 越界的起点要夹回合法范围，不能静默返回 nil
+local p7, s7 = L.fitScale({ 1.3, 1.2, 1.1 }, mkprobe(function() return true end), 99)
+ok(p7 == "payload@1.1" and s7 == 1.1, "起点超出档位数时夹到最后一档", tostring(p7))
+local p8, s8 = L.fitScale({ 1.3, 1.2, 1.1 }, mkprobe(function() return true end), 0)
+ok(p8 == "payload@1.3" and s8 == 1.3, "起点小于 1 时夹回第一档", tostring(p8))
+local p9 = L.fitScale({ 1.3, 1.2 }, mkprobe(function() return true end), nil)
+ok(p9 == "payload@1.3", "不传起点时行为与从前一致")
+
 print(string.format("\n%d passed, %d failed", pass, fail))
 os.exit(fail == 0 and 0 or 1)
