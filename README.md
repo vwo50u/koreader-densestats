@@ -21,12 +21,15 @@ and falls back to a random image if it isn't there.
 Top to bottom:
 
 - **Two rows of figures** — time read today / this week / this month / this year; then
-  streak, lifetime total, pages today, pages this week
+  streak, lifetime total, daily average this week, daily average this month
 - **A 30-day bar chart** with a dashed reference line at your active daily average
-  (labelled to the left of the plot), so you can see at a glance which days beat it
-- **Currently reading** — title, progress bar, percentage / page / time spent on that book
-- **Finished** — books in reverse date order, the month printed only on its first row
-- **Footer** — date, time, battery
+  (labelled to the left of the plot), so you can see at a glance which days beat it;
+  the axis is labelled "30 days ago" / "today" at its ends
+- **Currently reading** — title and author, an outlined progress bar, percentage / page /
+  time spent on that book
+- **Finished** — books in reverse date order, the month printed only on its first row;
+  up to 5 books are all shown before the list is cut
+- **Footer** — the moment the screen went to sleep, battery
 
 ### The type sizes adapt to the screen
 

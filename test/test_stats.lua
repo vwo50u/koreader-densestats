@@ -68,6 +68,12 @@ ok(d.month == 30309, "本月 = 全部", d.month)
 ok(d.year == d.month, "今年 = 本月（数据只有 8 月）")
 ok(d.streak == 1, "8-09 断档,连续只有 1 天", d.streak)
 ok(d.pages_today == 108 and d.pages_week == 108, "页数汇总", d.pages_today)
+-- 时段日均：除以"已过去的天数"（含今天），不是除以有记录的天数——
+-- 空着的日子也是这一周/这一月的一部分。
+ok(d.avg_week == 5375, "8-10 是周一，本周日均 = 本周 / 1", d.avg_week)
+ok(math.abs(d.avg_month - 30309 / 10) < 1e-6, "本月日均 = 本月 / 10 天", d.avg_month)
+local mid = S.derive(real, ts(2026,8,12,23), { curve_days=30, week_start=2 })
+ok(mid.avg_week == 5375 / 3, "周三：本周日均按 3 天算", mid.avg_week)
 ok(#d.curve == 30, "曲线固定 30 格", #d.curve)
 ok(d.curve[30] == 5375 and d.curve[29] == 0, "最后一格是今天,前一天为 0")
 ok(d.active_days == 8, "有记录的天数", d.active_days)

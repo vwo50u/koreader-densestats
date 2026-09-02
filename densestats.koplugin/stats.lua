@@ -87,6 +87,13 @@ function M.derive(data, now, cfg)
         if day:sub(1, 4) == year_key then d.year = d.year + s end
     end
 
+    -- 时段日均：除以已过去的天数（含今天）。空着的日子也属于这一周/这一月，
+    -- 除以"有记录的天数"会把偷懒的日子抹掉，得出一个自我安慰的数。
+    -- 曲线上那条虚线是终身有效日均，口径不同，正好互为对照。
+    local elapsed_week = (t.wday - week_start) % 7 + 1
+    d.avg_week = d.week / elapsed_week
+    d.avg_month = d.month / t.day
+
     d.pages_today, d.pages_week = 0, 0
     for day, n in pairs(pages_by_day) do
         n = tonumber(n) or 0

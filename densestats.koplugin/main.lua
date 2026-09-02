@@ -28,6 +28,8 @@ local InputContainer = require("ui/widget/container/inputcontainer")
 local LeftContainer = require("ui/widget/container/leftcontainer")
 local LineWidget = require("ui/widget/linewidget")
 local LuaSettings = require("luasettings")
+local ProgressWidget = require("ui/widget/progresswidget")
+local RightContainer = require("ui/widget/container/rightcontainer")
 local SQ3 = require("lua-ljsqlite3/init")
 local TextWidget = require("ui/widget/textwidget")
 local Trapper = require("ui/trapper")
@@ -70,6 +72,7 @@ local CFG = {
     -- 放不下的判据见 layoutOnce 的返回值（截断 / 已读完行数）。
     fscale_steps = { 1.30, 1.20, 1.10, 1.00, 0.90, 0.80, 0.70, 0.60 },
     min_fin_rows = 2,           -- "已读完"至少要放得下几行，否则降档
+    full_fin_rows = 5,          -- 读完的书不超过这么多本时，尽量全放下（见 buildWidget）
     gap_max_ratio = 1.6,        -- 区块间隙最多长到基准值的几倍，吸收不掉的归上下边距
 }
 -- =================================================================
@@ -189,21 +192,8 @@ local function collect()
     end
     data.by_day = by_day
 
-    -- 逐日页数只要够算「今日」和「本周」。本周最多回溯 6 天（周日往回到周一），
-    -- 取 9 天是留给时区偏移和跨日边界的余量。
-    local pages_by_day = {}
-    for _, r in ipairs(queryRows(conn, string.format([[
-        SELECT (start_time + %d) / 86400                 AS d,
-               -- 乘数要大于任何可能的页码；SQLite 是 64 位整数，
-               -- 就算 id 到十亿、页码到百万也不会溢出，不同书之间也不会撞车。
-               COUNT(DISTINCT id_book * 10000000 + page) AS n
-        FROM page_stat_data
-        WHERE start_time >= %d AND start_time > 0
-        GROUP BY d;
-    ]], off, dayCutoff(os.time(), off, 9)), 2)) do
-        pages_by_day[dayKeyOf(r[1])] = tonumber(r[2]) or 0
-    end
-    data.pages_by_day = pages_by_day
+    -- 页数不再查：crengine 下页码随字号浮动，"今日 46 页"说明不了什么。
+    -- 那两格换成了本周/本月日均（stats.lua 从 by_day 直接算），少一条 SQL。
 
     -- 累计时长直接取 book 表的汇总列，比全表求和快一个数量级。
     -- 口径说明（原来这里的注释写的是"和逐行截断的结果一致"，那是错的）：
@@ -252,14 +242,20 @@ local function collect()
         -- 后者该显示 "?" 加上正确的页码。SQLite 默认不强制外键，孤儿 id_book
         -- 是可能出现的。
         local cur = queryRows(conn, string.format([[
-            SELECT b.title, SUM(MIN(p.duration, %d)), COUNT(*)
+            SELECT b.title, b.authors, SUM(MIN(p.duration, %d)), COUNT(*)
             FROM page_stat_data p JOIN book b ON b.id = p.id_book
             WHERE p.id_book = %d;
-        ]], cap, id), 3)[1]
-        if cur and (tonumber(cur[3]) or 0) > 0 then
+        ]], cap, id), 4)[1]
+        if cur and (tonumber(cur[4]) or 0) > 0 then
+            -- statistics 插件拿不到作者时写的是字面量 "N/A"（main.lua:162），
+            -- 不是 NULL；多作者用换行分隔（与 doc_props.authors 同一约定）。
+            local authors = cur[2] and tostring(cur[2]) or ""
+            if authors == "N/A" then authors = "" end
+            authors = authors:gsub("\n", " · ")
             data.current = {
-                title = tostring(cur[1] or "?"),
-                sec   = tonumber(cur[2]) or 0,
+                title   = tostring(cur[1] or "?"),
+                authors = authors,
+                sec     = tonumber(cur[3]) or 0,
                 page  = page,
                 pages = pages,
                 -- 夹到 1：记录当时的 total_pages 比当前页码小的话（换过字号）会超 100%
@@ -510,13 +506,6 @@ local function txt(s, face, max_width)
     return TextWidget:new{ text = tostring(s), face = face, max_width = max_width }
 end
 
-local function rect(w, h)
-    return LineWidget:new{
-        background = Blitbuffer.COLOR_BLACK,
-        dimen = Geom:new{ w = math.max(1, math.floor(w)), h = math.max(1, math.floor(h)) },
-    }
-end
-
 -- 占满宽度的元素统一居中：HorizontalGroup 里的取整余数会让它们偏左几个像素
 local function centered(w, widget)
     local ok, sz = pcall(function() return widget:getSize() end)
@@ -662,15 +651,40 @@ local function currentBook(cur, usable_w)
         table.insert(g, txt("—", FACE_M(), usable_w))
         return g
     end
-    table.insert(g, txt(cur.title, FACE_M(), usable_w))
+    -- 书名后面跟作者，同一行、小一档、底对齐。作者先量宽，书名拿剩下的宽度，
+    -- 书名太长时截的是书名不是作者——作者短，截了就认不出来了。
+    -- 作者占到一半宽度以上就不要了，免得把书名挤成几个字。
+    local title_w = usable_w
+    local author = nil
+    if cur.authors and cur.authors ~= "" then
+        author = txt(cur.authors, FACE_L(), math.floor(usable_w / 2))
+        local aw = author:getSize().w + Screen:scaleBySize(12)
+        if aw < usable_w / 2 then
+            title_w = usable_w - aw
+        else
+            author:free(); author = nil
+        end
+    end
+    if author then
+        table.insert(g, HorizontalGroup:new{ align = "bottom",
+            txt(cur.title, FACE_M(), title_w),
+            HorizontalSpan:new{ width = Screen:scaleBySize(12) },
+            author,
+        })
+    else
+        table.insert(g, txt(cur.title, FACE_M(), usable_w))
+    end
     table.insert(g, VerticalSpan:new{ width = Size.padding.default })
 
-    -- 进度条
-    local bar_w = usable_w
-    local fill = math.max(2, math.floor(bar_w * math.min(cur.frac, 1)))
-    table.insert(g, HorizontalGroup:new{ align = "center",
-        rect(fill, Screen:scaleBySize(14)),   -- 与官方 readerprogress.lua:262 一致
-        HorizontalSpan:new{ width = 1 },
+    -- 进度条：带描边的底槽 + 填充。原来只画填充，4% 的时候就是个孤零零的黑方块，
+    -- 看不出它是条进度条。ProgressWidget 是官方统计页同一个部件
+    -- （readerprogress.lua:260），描边、圆角、边距都跟着它走。
+    table.insert(g, ProgressWidget:new{
+        width = usable_w,
+        height = Screen:scaleBySize(14),   -- 与 readerprogress.lua:262 一致
+        percentage = math.min(cur.frac, 1),
+        fillcolor = Blitbuffer.COLOR_BLACK,
+        ticks = nil, last = nil,
     })
     table.insert(g, VerticalSpan:new{ width = Size.padding.default })
 
@@ -728,12 +742,14 @@ local function finishedRows(fin_data, usable_w, budget_h)
     return g
 end
 
--- 页脚：时间 · 电量，整行居中
+-- 页脚：熄屏时刻 · 电量，整行居中。
+-- 时间必须标明是"熄屏"时刻：这屏一渲染就静止了，裸写一个钟点，第二天早上瞄一眼
+-- 会当成现在几点。
 local function footerRow(usable_w)
     local batt = ""
     local ok_p, pd = pcall(function() return Device:getPowerDevice() end)
     if ok_p and pd then batt = string.format("  ·  %d%%", pd:getCapacity()) end
-    return centered(usable_w, txt(os.date("%Y-%m-%d %H:%M") .. batt, FACE_S()))
+    return centered(usable_w, txt(os.date("%Y-%m-%d %H:%M 熄屏") .. batt, FACE_S()))
 end
 
 -- 按当前的 FSCALE 排一遍版。返回值供 fit 循环判断"放不放得下"：
@@ -770,17 +786,16 @@ local function layoutOnce(data, d, fin_data)
     table.insert(root, hrule(usable))
     gap(16)
 
-    -- 有效日均不再占一格：它画成了曲线上的参考线（见下）。腾出来的位置让
-    -- 累计、今日页数、本周页数各进一格，四列变成"天数 / 时长 / 页数 / 页数"。
-    -- 原来"今日页数"底下挂着"本周 N 页"的附注，四列里只有它有附注，看着是个疙瘩。
+    -- 有效日均（终身）不占格：它画成了曲线上的参考线（见下）。
+    -- 后两格是本周/本月日均——原来是今日/本周页数，crengine 下页码随字号浮动，
+    -- 那两个数说明不了什么；日均和曲线上的终身日均形成对照，能看出这周是勤是懒。
     -- 标签一律"2 字限定词 + 2 字单位名"，这一排内部字数才齐。上一排是纯时间段、
     -- 值全是时长，不需要单位名，所以维持 2 字——两排各自统一，中间隔着分隔线。
-    -- 不把这排压成 2 字是因为"今日页数"只能叫"今日"，会和上一排的"今日"撞名。
     local row2, cut2 = cellRow({
         { "连续天数", tostring(d.streak) },
         { "累计时长", fmtHM(d.total) },
-        { "今日页数", tostring(d.pages_today) },
-        { "本周页数", tostring(d.pages_week) },
+        { "本周日均", fmtHM(d.avg_week) },
+        { "本月日均", fmtHM(d.avg_month) },
     }, usable)
     table.insert(root, row2)
     gap(22)
@@ -814,14 +829,29 @@ local function layoutOnce(data, d, fin_data)
     else
         table.insert(root, centered(usable, curve))
     end
+    -- 横轴只标两端。没有它，"右边是今天"全靠猜。字用辅助档，不另开字号。
+    -- 左端对齐到曲线的左边（跳过日均标签那段），不是整行的左边。
+    do
+        local axis_w = usable - avg_w - avg_gap
+        local half = math.floor(axis_w / 2)
+        local l = txt(string.format("%d 天前", CFG.curve_days), FACE_L(), half)
+        local r = txt("今天", FACE_L(), axis_w - half)
+        local ah = math.max(l:getSize().h, r:getSize().h)
+        table.insert(root, VerticalSpan:new{ width = Screen:scaleBySize(3) })
+        table.insert(root, HorizontalGroup:new{ align = "top",
+            HorizontalSpan:new{ width = avg_w + avg_gap },
+            LeftContainer:new{ dimen = Geom:new{ w = half, h = ah }, l },
+            RightContainer:new{ dimen = Geom:new{ w = axis_w - half, h = ah }, r },
+        })
+    end
     gap(22)
     table.insert(root, centered(usable, hrule(usable)))
     gap(16)
 
     table.insert(root, currentBook(data.current, usable))
-    gap(16)
-    table.insert(root, centered(usable, hrule(usable)))
-    gap(16)
+    -- 这里原来还有一条分隔线。整屏三条线太多，当前在读和已读完之间靠间距分开
+    -- 就够了——两块的字号、行距都不同，本身就有边界。
+    gap(22)
 
     if os.getenv("DENSESTATS_DEBUG") == "1" then
         local function wof(w) local ok, sz = pcall(function() return w:getSize() end)
@@ -965,15 +995,24 @@ local function buildWidget()
     -- 所以漏 free 的后果是"C 侧内存拖到不确定的将来才还"，不是崩溃或画不出来。
     -- 放在下一轮开头而不是当场放，是因为回调不知道自己是不是最后一轮——
     -- 全都放不下时 fitScale 会把最后一棵当兜底返回，当场 free 就会返回一棵死树。
+    -- "已读完"要放几行：藏书不多（<= full_fin_rows）时全放下——标题写着"共 3 本"
+    -- 却只列 2 本，看着像漏了。为此最多让字号多降一档：头两轮按全量要求，之后
+    -- 退回 min_fin_rows。头两轮而不是一轮，是因为起点比上次胜出的档位大一档，
+    -- 第一轮多半是白试。
+    local n_fin = fin_data and #(fin_data.titles or {}) or 0
+    local want_rows = math.max(CFG.min_fin_rows, math.min(n_fin, CFG.full_fin_rows))
+    local round = 0
     local pending_free
     local widget, step, tries, fit_idx = Layout.fitScale(CFG.fscale_steps, function(k)
         if pending_free then
             pcall(function() pending_free:free() end)
             pending_free = nil
         end
+        round = round + 1
         FSCALE = k
         local w, budget, fin_row_h, truncated = layoutOnce(data, d, fin_data)
-        local fits = (not truncated) and budget >= CFG.min_fin_rows * fin_row_h
+        local need = round <= 2 and want_rows or CFG.min_fin_rows
+        local fits = (not truncated) and budget >= need * fin_row_h
         if not fits then pending_free = w end
         return fits, w
     end, math.max(1, last_fit_idx - 1))
