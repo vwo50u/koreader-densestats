@@ -7,6 +7,7 @@
 #   ./dev.sh check    语法检查（用 KOReader.app 自带的 luajit）
 #   ./dev.sh test     跑单元测试
 #   ./dev.sh log      只看日志
+#   ./dev.sh install  拷到 USB 挂载的 Kindle（KINDLE=/Volumes/Kindle 可改）
 set -euo pipefail
 
 PROJ="$(cd "$(dirname "$0")" && pwd)"
@@ -47,6 +48,19 @@ check)
     ;;
 test)
     exec "$PROJ/test/run.sh"
+    ;;
+install)
+    # 用 cp -X 而不是 Finder 拖拽：macOS 往 FAT 卷上拷文件会给每个文件配一个
+    # AppleDouble 伪文件（._main.lua 之类，存扩展属性）。KOReader 会忽略它们，
+    # 但它们会一直躺在设备上，diff -rq 时也碍眼。-X 就是"别拷扩展属性"。
+    # 顺手清掉以前拖拽留下的，包括 plugins/ 目录层那个 ._densestats.koplugin。
+    KINDLE="${KINDLE:-/Volumes/Kindle}"
+    DEST="$KINDLE/koreader/plugins/densestats.koplugin"
+    [ -d "$KINDLE/koreader/plugins" ] || { echo "找不到 $KINDLE/koreader/plugins，Kindle 没挂上？"; exit 1; }
+    mkdir -p "$DEST"
+    cp -X "$PROJ"/densestats.koplugin/*.lua "$DEST"/
+    rm -f "$DEST"/._* "$DEST"/.DS_Store "$KINDLE/koreader/plugins/._densestats.koplugin"
+    diff -rq "$PROJ/densestats.koplugin" "$DEST" && echo "已同步到 $DEST"
     ;;
 log)
     D="$(datadir)"

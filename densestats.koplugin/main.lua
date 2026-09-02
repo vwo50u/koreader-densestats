@@ -292,17 +292,32 @@ local function cachePath()
     return DataStorage:getSettingsDir() .. "/densestats_finished.lua"
 end
 
+-- 缓存时间戳的内存副本。maybeRescanLater 在每次唤醒都要判"缓存过期了没"，
+-- 原来是整份 dofile 只为读一个 ts。有了这个副本，只在它说"过期"时才去碰盘确认，
+-- 12 小时窗口内的唤醒一次盘都不读。
+-- 只能当"可能新鲜"用，不能当"确定过期"用：子进程写完缓存后父进程的副本仍是旧值，
+-- 所以过期判断必须回到磁盘再看一眼，否则会在每次唤醒时重复派子进程。
+-- nil = 还没读过盘；0 = 读过但没有缓存。
+local cache_ts_mem
+
 local function loadCache()
+    cache_ts_mem = 0
     local ok, s = pcall(LuaSettings.open, LuaSettings, cachePath())
     if not ok or not s then return nil end
     local months = s:readSetting("months")
     if type(months) ~= "table" then return nil end
-    return {
+    local c = {
         ts     = tonumber(s:readSetting("ts")) or 0,
         total  = tonumber(s:readSetting("total")) or 0,
         months = months,
         titles = s:readSetting("titles") or {},
     }
+    cache_ts_mem = c.ts
+    return c
+end
+
+local function cacheFresh(ts)
+    return ts ~= nil and (os.time() - ts) < CFG.finished_cache_hours * 3600
 end
 
 local function saveCache(summary)
@@ -334,9 +349,10 @@ local function saveCache(summary)
     -- 后者是有意的取舍：rename 保证了读者永远读不到半截文件，备份的意义本来
     -- 就在于此，而它原先还有"原文件不满 60 秒就不备份"的空窗。
     local final, tmp = cachePath(), cachePath() .. ".new"
+    local ts = os.time()
     local ok, err = pcall(function()
         local s = LuaSettings:open(tmp)
-        s:saveSetting("ts", os.time())
+        s:saveSetting("ts", ts)
         s:saveSetting("total", summary.total)
         s:saveSetting("months", summary.months)
         s:saveSetting("titles", titles)
@@ -347,6 +363,9 @@ local function saveCache(summary)
         os.remove(tmp)              -- rename 成功时这是空操作
         os.remove(tmp .. ".old")    -- flush 可能给临时文件也留了个备份
     end
+    -- 在子进程里这行改的是子进程自己的副本，没意义但也无害；
+    -- 父进程走手动重扫（_rescanWithFeedback）时靠它免掉下一次的磁盘确认。
+    if ok then cache_ts_mem = ts end
     -- 静默失败的后果很重（见上），必须让日志里看得见
     if not ok then
         logger.warn("densestats: 写缓存失败，已读完列表会每次开书重扫:", err)
@@ -441,8 +460,10 @@ local rescan_task              -- 存下来才能 unschedule
 local function maybeRescanLater()
     if rescan_scheduled then return end   -- ReaderUI 与 FileManager 各有一个插件实例
     if os.time() < rescan_busy_until then return end   -- 上一个子进程多半还在跑
+    -- 内存副本说新鲜就信它，不碰盘；说过期才读盘确认（理由见 cache_ts_mem）
+    if cacheFresh(cache_ts_mem) then return end
     local cache = loadCache()
-    if cache and (os.time() - (cache.ts or 0)) < CFG.finished_cache_hours * 3600 then return end
+    if cache and cacheFresh(cache.ts) then return end
     rescan_scheduled = true
     -- 有旧缓存就慢慢来（20 秒后），别和开书抢时间；
     -- 一次都没扫过就尽快扫，否则首次安装后的头一屏"已读完"永远是空的
