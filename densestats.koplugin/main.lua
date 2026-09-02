@@ -1179,6 +1179,15 @@ function DenseStats:_maybeAutoShow()
     DenseStats._autoshown = true
     UIManager:scheduleIn(6, function()
         UIManager:show(Preview:new{})
+        -- DENSESTATS_SHOT=/path/x.png：画完两秒后把帧缓冲存成 PNG。纯开发用，
+        -- 桌面上拿不到设备截图，评审排版只能靠这个。
+        local shot = os.getenv("DENSESTATS_SHOT")
+        if shot and shot ~= "" then
+            UIManager:scheduleIn(2, function()
+                local ok, err = pcall(function() Screen:shot(shot) end)
+                logger.info("densestats: 截图", shot, ok and "ok" or err)
+            end)
+        end
     end)
 end
 
