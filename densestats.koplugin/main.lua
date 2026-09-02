@@ -472,9 +472,9 @@ end
 -- 字号写的是"未缩放的设计尺寸"，getFace 内部按屏幕短边 / 600 缩放
 -- （font.lua:269-277、ffi/framebuffer.lua:414-425），跨分辨率自动成立。
 -- 内容量是固定的，竖屏横屏都放得下，所以不再需要上一版的字号自适应循环。
-local SIZE_HERO, SIZE_BODY, SIZE_SMALL = 64, 22, 15
+local SIZE_HERO, SIZE_BODY, SIZE_SMALL = 64, 22, 18
 local INK_BLACK = Blitbuffer.COLOR_BLACK
-local INK_DIM   = Blitbuffer.COLOR_DARK_GRAY    -- 0x88：标签、辅助信息、柱子
+local INK_DIM   = Blitbuffer.COLOR_GRAY_6       -- 0x66：标签、辅助信息、柱子。真机上 0x88 太淡
 local INK_FAINT = Blitbuffer.COLOR_LIGHT_GRAY   -- 0xCC：进度线的未读部分
 
 local function faceHero()  return Font:getFace("largeffont", SIZE_HERO) end
