@@ -20,33 +20,28 @@ and falls back to a random image if it isn't there.
 
 Top to bottom:
 
-- **Two rows of figures** — time read today / this week / this month / this year; then
-  streak, lifetime total, daily average this week, daily average this month
-- **A 30-day bar chart** with a dashed reference line at your active daily average
-  (labelled to the left of the plot), so you can see at a glance which days beat it;
-  the axis is labelled "30 days ago" / "today" at its ends
-- **Currently reading** — title and author, an outlined progress bar, percentage / page /
-  time spent on that book
-- **Finished** — books in reverse date order, the month printed only on its first row;
-  up to 5 books are all shown before the list is cut
-- **Footer** — the moment the screen went to sleep, battery
+- **Time read today** — the one large figure on the screen
+- **One small line** — streak · lifetime total · books finished
+- **A 30-day chart** — thin dark-grey bars with gaps, empty where nothing was read;
+  no title, no numbers
+- **Currently reading** — title, author · percentage, and a hairline progress bar
+  (black for what is read, light grey for the rest)
+- **Battery** — tiny grey text in the bottom-right corner. No clock: a sleep screen
+  is rendered once and then freezes, and a frozen clock only misleads
 
-### The type sizes adapt to the screen
+### Layout principles
 
-Three tiers (emphasis / body / auxiliary) start from KOReader's own named design sizes
-of 25 / 20 / 15, then get multiplied by a factor. Rendering tries 1.30 first and steps
-down until the layout fits: no cell in the four-column rows may be truncated, and the
-finished list must still have room for two entries. If nothing fits, the smallest step
-wins — small type beats pushing the footer off the screen.
+Minimal, generous white space, left-aligned. Three rules:
 
-This is how KOReader itself handles fill-the-screen widgets (see `calendarview.lua`,
-`keyvaluepage.lua`, `menu.lua`), and it beats hardcoding numbers that happen to look
-right on one device. It assumes nothing about the hardware; it only asks whether the
-content fits *this* screen at *this* scale factor. Resolution, aspect ratio, orientation,
-a user-set "Screen DPI" override, and content length are all absorbed automatically.
+- three type sizes only, and the large one goes to a single figure;
+- three ink levels (black / dark grey / light grey), with black reserved for today's
+  time and the book title;
+- sections are separated by space, never by rules.
 
-Set `DENSESTATS_DEBUG=1` to log the chosen factor, how many passes it took, and the
-layout time.
+Sizes are KOReader "design sizes": `Font:getFace` scales them by short edge / 600, so
+they hold across resolutions. The content is fixed and fits in both orientations, so
+there is no fit-to-screen loop; spacing is a fraction of screen height and tightens
+in landscape.
 
 ## Layout
 
@@ -55,7 +50,6 @@ densestats.koplugin/
   main.lua       rendering and plugin wiring (the only file touching KOReader widgets)
   stats.lua      duration formatting + time-series derivation (pure Lua, unit-tested)
   finished.lua   scans sidecars to count finished books (pure Lua, unit-tested)
-  layout.lua     layout arithmetic: slack allocation, step-down search (pure Lua, tested)
 sql/queries.sql  standalone SQL for cross-checking the figures
 test/            unit tests, run directly with the luajit KOReader ships
 dev.sh           development script

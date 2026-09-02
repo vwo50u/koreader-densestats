@@ -5,5 +5,5 @@ return {
     -- 这里不要写 name —— pluginloader.lua:256-259 把它当 deprecated 丢弃并打警告，
     -- 真正的 name 来自目录名。
     fullname = _("Dense reading stats"),
-    description = _("高密度阅读统计睡眠屏幕：今日/周/月/年时长、连续天数、30 天曲线、每本书时长、每月读完本数。"),
+    description = _("极简阅读统计睡眠屏幕：今日时长、连续天数、累计、读完本数、30 天曲线、当前在读。"),
 }

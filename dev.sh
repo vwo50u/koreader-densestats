@@ -60,6 +60,10 @@ install)
     mkdir -p "$DEST"
     cp -X "$PROJ"/densestats.koplugin/*.lua "$DEST"/
     rm -f "$DEST"/._* "$DEST"/.DS_Store "$KINDLE/koreader/plugins/._densestats.koplugin"
+    # 仓库里删掉的模块设备上也要删，否则 diff 报"Only in"，而且残留文件会误导排查
+    for f in "$DEST"/*.lua; do
+        [ -e "$PROJ/densestats.koplugin/$(basename "$f")" ] || rm -f "$f"
+    done
     diff -rq "$PROJ/densestats.koplugin" "$DEST" && echo "已同步到 $DEST"
     ;;
 log)

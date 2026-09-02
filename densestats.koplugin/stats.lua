@@ -135,35 +135,4 @@ function M.derive(data, now, cfg)
     return d
 end
 
--- 已读完列表：按日期降序，同月只在第一行标月份（label），其余留空。
--- 缺日期的条目排在最后，用月份兜底。
-function M.groupFinished(list)
-    local items = {}
-    for _, t in ipairs(list or {}) do
-        if type(t) == "table" then
-            local month = t.month
-            if (not month or month == "") and type(t.date) == "string" then
-                month = t.date:sub(1, 7)
-            end
-            items[#items + 1] = {
-                title = tostring(t.title or ""),
-                month = month or "",
-                date = tostring(t.date or ""),
-            }
-        end
-    end
-    table.sort(items, function(a, b)
-        local da = a.date ~= "" and a.date or a.month
-        local db = b.date ~= "" and b.date or b.month
-        if da ~= db then return da > db end
-        return a.title < b.title
-    end)
-    local last = nil
-    for _, t in ipairs(items) do
-        t.label = (t.month ~= last) and t.month or ""
-        last = t.month
-    end
-    return items
-end
-
 return M
