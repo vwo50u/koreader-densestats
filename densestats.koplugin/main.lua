@@ -492,6 +492,7 @@ end
 -- 30 天曲线：细柱、深灰、柱间留缝，没读的日子留空。不画标题、峰值、日均线、
 -- 横轴文字——这版里它是一段节奏纹理，不是一张要读数的图表。
 -- 纵轴刻度取 max(峰值, 1 小时)，读得少的日子不会把柱子顶满整图。
+-- 最后一根是今天：熄屏时今天多半只读了一半，画成浅灰，免得曲线结尾看着总像塌了一截。
 local CurveWidget = Widget:extend{ values = nil, w = 0, h = 0, scale = 3600, gap = 1 }
 
 function CurveWidget:getSize()
@@ -506,7 +507,8 @@ function CurveWidget:paintTo(bb, x, y)
     for i, v in ipairs(self.values) do
         if v > 0 then
             local h = math.max(1, math.floor(self.h * v / self.scale))
-            bb:paintRect(x + (i - 1) * (bar_w + gap), y + self.h - h, bar_w, h, INK_DIM)
+            bb:paintRect(x + (i - 1) * (bar_w + gap), y + self.h - h, bar_w, h,
+                         i == n and INK_FAINT or INK_DIM)
         end
     end
 end
@@ -534,18 +536,15 @@ local function layout(data, d, fin_data)
     local col = VerticalGroup:new{ align = "left" }
     local function add(w) table.insert(col, w) end
 
-    -- 今日：唯一的大字
-    add(txt(fmtClock(d.today), faceHero(), INK_BLACK, usable))
+    -- 唯一的大字：今天，没读就退到昨天 / 本周（见 Stats.hero）
+    local hero_sec, hero_label = Stats.hero(d)
+    add(txt(fmtClock(hero_sec), faceHero(), INK_BLACK, usable))
     add(vspace(Screen:scaleBySize(2)))
-    add(txt("今日阅读", faceSmall(), INK_DIM, usable))
+    add(txt(hero_label, faceSmall(), INK_DIM, usable))
     add(vspace(H * 0.04))
 
-    -- 一行小字把连续、累计、读完本数收在一起
-    local parts = { string.format("连读 %d 天", d.streak), "累计 " .. fmtHM(d.total) }
-    if fin_data and fin_data.total then
-        parts[#parts + 1] = string.format("读完 %d 本", fin_data.total)
-    end
-    add(txt(table.concat(parts, "  ·  "), faceSmall(), INK_DIM, usable))
+    -- 一行小字把连续、累计、读完本数收在一起，零值不写
+    add(txt(Stats.summaryLine(d, fin_data and fin_data.total), faceSmall(), INK_DIM, usable))
     add(vspace(H * 0.09))
 
     -- 曲线
@@ -558,11 +557,16 @@ local function layout(data, d, fin_data)
     add(vspace(H * 0.09))
 
     -- 当前在读：书名、作者 · 百分比、细线进度。没有在读的书就整块不画。
+    -- 书名一行放不下就丢副标题；百分比向下取整，没读完就不许显示 100%。
     local cur = data.current
     if cur then
-        add(txt(cur.title, faceBody(), INK_BLACK, usable))
+        local title = txt(cur.title, faceBody(), INK_BLACK)
+        if title:getSize().w > usable then
+            title = txt(Stats.shortTitle(cur.title), faceBody(), INK_BLACK, usable)
+        end
+        add(title)
         add(vspace(Screen:scaleBySize(6)))
-        local sub = string.format("%d%%", math.floor(cur.frac * 100 + 0.5))
+        local sub = string.format("%d%%", math.floor(cur.frac * 100))
         if cur.authors and cur.authors ~= "" then sub = cur.authors .. "  ·  " .. sub end
         add(txt(sub, faceSmall(), INK_DIM, usable))
         add(vspace(Screen:scaleBySize(12)))

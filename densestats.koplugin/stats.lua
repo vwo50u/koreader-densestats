@@ -138,7 +138,44 @@ function M.derive(data, now, cfg)
     end
     d.streak = streak
 
+    d.yesterday = tonumber(by_day[dayKey(os.time({ year = t.year, month = t.month, day = t.day - 1, hour = 12 }))]) or 0
+
     return d
+end
+
+-- 大字给谁：今天还没读就退到昨天，昨天也没有就退到本周。
+-- 锁屏顶着一个 0:00 不像海报像催债；只有整周都空着才认命显示 0。
+function M.hero(d)
+    if (d.today or 0) > 0 then return d.today, "今日阅读" end
+    if (d.yesterday or 0) > 0 then return d.yesterday, "昨日阅读" end
+    if (d.week or 0) > 0 then return d.week, "本周阅读" end
+    return 0, "今日阅读"
+end
+
+-- 大字下面那行小字。零值是负面信息（"连读 0 天""读完 0 本"），直接不写；
+-- 累计永远在，作为这行的锚。fin_total 为 nil 表示缓存还没扫出来，同样不写。
+function M.summaryLine(d, fin_total)
+    local parts = {}
+    if (d.streak or 0) > 0 then parts[#parts + 1] = string.format("连读 %d 天", d.streak) end
+    parts[#parts + 1] = "累计 " .. M.fmtHM(d.total)
+    if fin_total and fin_total > 0 then parts[#parts + 1] = string.format("读完 %d 本", fin_total) end
+    return table.concat(parts, "  ·  ")
+end
+
+-- 书名截短：单行放不下时先丢副标题。只认冒号和带空格的破折号，
+-- "Spider-Man" 这种连字符不碰。截完为空就退回原名。
+-- Lua 模式按字节匹配，多字节字符不能进字符类 [...]，所以分隔符逐个试，取最靠前的。
+local TITLE_SEPS = { "%s*：", "%s*:", "%s+%-+%s", "%s*—", "%s*–" }
+function M.shortTitle(title)
+    title = tostring(title or "")
+    local best
+    for _, sep in ipairs(TITLE_SEPS) do
+        local main = title:match("^(.-)" .. sep)
+        if main and (not best or #main < #best) then best = main end
+    end
+    best = best and best:gsub("^%s+", "") or ""
+    if best == "" then return title end
+    return best
 end
 
 return M

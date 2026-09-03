@@ -20,11 +20,13 @@ and falls back to a random image if it isn't there.
 
 Top to bottom:
 
-- **Time read today** — the one large figure on the screen
-- **One small line** — streak · lifetime total · books finished
+- **Time read today** — the one large figure on the screen, written as `1:20`.
+  Nothing read yet today falls back to yesterday, then to this week, with the label changed
+- **One small line** — streak · lifetime total · books finished; zero values are omitted
 - **A 30-day chart** — thin dark-grey bars with gaps, empty where nothing was read;
-  no title, no numbers
-- **Currently reading** — title, author · percentage, and a hairline progress bar
+  no title, no numbers. Today's bar is light grey, since the day is usually unfinished
+- **Currently reading** — title (subtitle dropped if it does not fit on one line),
+  author · percentage (rounded down), and a hairline progress bar
   (black for what is read, light grey for the rest)
 - **Battery** — tiny grey text in the bottom-right corner. No clock: a sleep screen
   is rendered once and then freezes, and a frozen clock only misleads

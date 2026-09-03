@@ -36,6 +36,31 @@ ok(S.fmtClock(12 * 3600 + 7 * 60) == "12:07", "两位数小时仍带分钟", S.f
 ok(S.fmtClock(nil) == "0:00", "nil 不炸", S.fmtClock(nil))
 ok(S.fmtClock(-5) == "0:00", "负数按 0", S.fmtClock(-5))
 
+print("== hero ==")
+local function hero(d) local v, l = S.hero(d); return S.fmtClock(v) .. " " .. l end
+ok(hero({ today = 80*60, yesterday = 3600, week = 9000 }) == "1:20 今日阅读", "今天读了就显示今天", hero({ today = 80*60, yesterday = 3600, week = 9000 }))
+ok(hero({ today = 0, yesterday = 45*60, week = 9000 }) == "0:45 昨日阅读", "今天没读退到昨天", hero({ today = 0, yesterday = 45*60, week = 9000 }))
+ok(hero({ today = 0, yesterday = 0, week = 7200 }) == "2:00 本周阅读", "昨天也没读退到本周", hero({ today = 0, yesterday = 0, week = 7200 }))
+ok(hero({ today = 0, yesterday = 0, week = 0 }) == "0:00 今日阅读", "整周空着才显示 0", hero({ today = 0, yesterday = 0, week = 0 }))
+ok(hero({}) == "0:00 今日阅读", "空表不炸", hero({}))
+
+print("== summaryLine ==")
+ok(S.summaryLine({ streak = 3, total = 100*3600 }, 12) == "连读 3 天  ·  累计 100h  ·  读完 12 本", "三段齐全",
+   S.summaryLine({ streak = 3, total = 100*3600 }, 12))
+ok(S.summaryLine({ streak = 0, total = 100*3600 }, 0) == "累计 100h", "零值不写", S.summaryLine({ streak = 0, total = 100*3600 }, 0))
+ok(S.summaryLine({ streak = 0, total = 100*3600 }, nil) == "累计 100h", "缓存未就绪不写读完", S.summaryLine({ streak = 0, total = 100*3600 }, nil))
+ok(S.summaryLine({}, nil) == "累计 0m", "空表不炸", S.summaryLine({}, nil))
+
+print("== shortTitle ==")
+ok(S.shortTitle("置身事外：房地产、债务与经济增长") == "置身事外", "中文冒号截副标题", S.shortTitle("置身事外：房地产、债务与经济增长"))
+ok(S.shortTitle("Thinking, Fast and Slow: A Study") == "Thinking, Fast and Slow", "英文冒号", S.shortTitle("Thinking, Fast and Slow: A Study"))
+ok(S.shortTitle("Foo - Bar") == "Foo", "带空格的连字符当破折号", S.shortTitle("Foo - Bar"))
+ok(S.shortTitle("Spider-Man") == "Spider-Man", "无空格连字符不碰", S.shortTitle("Spider-Man"))
+ok(S.shortTitle("红楼梦 — 脂评本") == "红楼梦", "破折号", S.shortTitle("红楼梦 — 脂评本"))
+ok(S.shortTitle("红楼梦") == "红楼梦", "没有副标题原样返回", S.shortTitle("红楼梦"))
+ok(S.shortTitle("：无正题") == "：无正题", "截完为空退回原名", S.shortTitle("：无正题"))
+ok(S.shortTitle(nil) == "", "nil 不炸", S.shortTitle(nil))
+
 print("== rowsOf ==")
 ok(#S.rowsOf(nil, 2) == 0, "nil 结果返回空表")
 ok(#S.rowsOf({}, 2) == 0, "空结果返回空表")
@@ -73,6 +98,7 @@ local real = { by_day = {
 }, pages_by_day = { ["2026-08-10"]=108, ["2026-08-08"]=54 } }
 local d = S.derive(real, ts(2026,8,10,23), { curve_days=30, week_start=2 })
 ok(S.fmtHM(d.today) == "1h29", "今日 = 5375 秒", S.fmtHM(d.today))
+ok(S.derive(real, ts(2026,8,11,23), { curve_days=30, week_start=2 }).yesterday == d.today, "昨日 = 前一天的今日")
 ok(d.week == 5375, "本周从周一算起,只有今天", d.week)
 ok(d.month == 30309, "本月 = 全部", d.month)
 ok(d.year == d.month, "今年 = 本月（数据只有 8 月）")
