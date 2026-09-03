@@ -95,7 +95,7 @@ local function dayCutoff(now, off, days)
     return (math.floor((now + off) / 86400) - days) * 86400 - off
 end
 
-local fmtHM, rowsOf = Stats.fmtHM, Stats.rowsOf
+local fmtHM, fmtClock, rowsOf = Stats.fmtHM, Stats.fmtClock, Stats.rowsOf
 
 -- ============================ 取数 ============================
 
@@ -535,7 +535,7 @@ local function layout(data, d, fin_data)
     local function add(w) table.insert(col, w) end
 
     -- 今日：唯一的大字
-    add(txt(fmtHM(d.today), faceHero(), INK_BLACK, usable))
+    add(txt(fmtClock(d.today), faceHero(), INK_BLACK, usable))
     add(vspace(Screen:scaleBySize(2)))
     add(txt("今日阅读", faceSmall(), INK_DIM, usable))
     add(vspace(H * 0.04))

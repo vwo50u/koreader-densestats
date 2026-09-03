@@ -26,6 +26,16 @@ ok(S.fmtHM(1234 * 3600 + 3360) == "1234h", "四位数小时", S.fmtHM(1234 * 360
 ok(S.fmtHM(11 * 3600 + 3599) == "11h", "接近整点也不进位", S.fmtHM(11 * 3600 + 3599))
 ok(S.fmtHours == nil, "fmtHours 已从 stats 移除", tostring(S.fmtHours))
 
+print("== fmtClock ==")
+ok(S.fmtClock(0) == "0:00", "0 秒", S.fmtClock(0))
+ok(S.fmtClock(59) == "0:00", "不足一分钟", S.fmtClock(59))
+ok(S.fmtClock(45 * 60) == "0:45", "不足一小时不补小时前导零", S.fmtClock(45 * 60))
+ok(S.fmtClock(3600) == "1:00", "整一小时分钟补零", S.fmtClock(3600))
+ok(S.fmtClock(3600 + 20 * 60 + 59) == "1:20", "1 小时 20 分，秒截断", S.fmtClock(3600 + 20 * 60 + 59))
+ok(S.fmtClock(12 * 3600 + 7 * 60) == "12:07", "两位数小时仍带分钟", S.fmtClock(12 * 3600 + 7 * 60))
+ok(S.fmtClock(nil) == "0:00", "nil 不炸", S.fmtClock(nil))
+ok(S.fmtClock(-5) == "0:00", "负数按 0", S.fmtClock(-5))
+
 print("== rowsOf ==")
 ok(#S.rowsOf(nil, 2) == 0, "nil 结果返回空表")
 ok(#S.rowsOf({}, 2) == 0, "空结果返回空表")
