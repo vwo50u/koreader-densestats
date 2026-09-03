@@ -7,7 +7,7 @@
 #   ./dev.sh check    语法检查（用 KOReader.app 自带的 luajit）
 #   ./dev.sh test     跑单元测试
 #   ./dev.sh log      只看日志
-#   ./dev.sh install  拷到 USB 挂载的 Kindle（KINDLE=/Volumes/Kindle 可改）
+#   ./dev.sh install  拷到 USB 挂载的 Kindle 或 Kobo（KINDLE=/Volumes/xxx 可强制）
 set -euo pipefail
 
 PROJ="$(cd "$(dirname "$0")" && pwd)"
@@ -54,12 +54,20 @@ install)
     # AppleDouble 伪文件（._main.lua 之类，存扩展属性）。KOReader 会忽略它们，
     # 但它们会一直躺在设备上，diff -rq 时也碍眼。-X 就是"别拷扩展属性"。
     # 顺手清掉以前拖拽留下的，包括 plugins/ 目录层那个 ._densestats.koplugin。
-    KINDLE="${KINDLE:-/Volumes/Kindle}"
-    DEST="$KINDLE/koreader/plugins/densestats.koplugin"
-    [ -d "$KINDLE/koreader/plugins" ] || { echo "找不到 $KINDLE/koreader/plugins，Kindle 没挂上？"; exit 1; }
+    # 自动认设备：Kindle 挂成 /Volumes/Kindle，Kobo 挂成 /Volumes/KOBOeReader（KOReader 在 .adds 下）
+    if [ -n "${KINDLE:-}" ]; then
+        PLUGINS="$KINDLE/koreader/plugins"
+    elif [ -d /Volumes/Kindle/koreader/plugins ]; then
+        PLUGINS=/Volumes/Kindle/koreader/plugins
+    elif [ -d /Volumes/KOBOeReader/.adds/koreader/plugins ]; then
+        PLUGINS=/Volumes/KOBOeReader/.adds/koreader/plugins
+    else
+        echo "没有挂载的 Kindle 或 Kobo（找不到 koreader/plugins 目录）"; exit 1
+    fi
+    DEST="$PLUGINS/densestats.koplugin"
     mkdir -p "$DEST"
     cp -X "$PROJ"/densestats.koplugin/*.lua "$DEST"/
-    rm -f "$DEST"/._* "$DEST"/.DS_Store "$KINDLE/koreader/plugins/._densestats.koplugin"
+    rm -f "$DEST"/._* "$DEST"/.DS_Store "$PLUGINS/._densestats.koplugin"
     # 仓库里删掉的模块设备上也要删，否则 diff 报"Only in"，而且残留文件会误导排查
     for f in "$DEST"/*.lua; do
         [ -e "$PROJ/densestats.koplugin/$(basename "$f")" ] || rm -f "$f"
