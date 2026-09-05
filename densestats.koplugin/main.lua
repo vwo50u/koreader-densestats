@@ -22,9 +22,7 @@ local Font = require("ui/font")
 local FrameContainer = require("ui/widget/container/framecontainer")
 local Geom = require("ui/geometry")
 local GestureRange = require("ui/gesturerange")
-local HorizontalGroup = require("ui/widget/horizontalgroup")
 local InputContainer = require("ui/widget/container/inputcontainer")
-local LineWidget = require("ui/widget/linewidget")
 local LuaSettings = require("luasettings")
 local RightContainer = require("ui/widget/container/rightcontainer")
 local SQ3 = require("lua-ljsqlite3/init")
@@ -505,18 +503,26 @@ function CurveWidget:paintTo(bb, x, y)
     end
 end
 
--- 进度：一条细线，读过的黑、未读的浅灰。上一版是带描边的粗条，在这版里太重。
-local function progressLine(frac, w)
-    local h = Screen:scaleBySize(2)
-    local done = math.floor(w * math.max(0, math.min(tonumber(frac) or 0, 1)))
-    local g = HorizontalGroup:new{ align = "center" }
-    if done > 0 then
-        table.insert(g, LineWidget:new{ background = INK_BLACK, dimen = Geom:new{ w = done, h = h } })
+-- 进度：一条细线，读过的黑、未读的浅灰，25 / 50 / 75% 处各一道短竖刻度，
+-- 让 4% 和 40% 一眼分得开（借自 bookshelf-screensaver 的进度带）。
+-- 上一版是带描边的粗条，在这版里太重。
+local ProgressLine = Widget:extend{ frac = 0, w = 0 }
+
+function ProgressLine:getSize()
+    return Geom:new{ w = self.w, h = Screen:scaleBySize(8) }
+end
+
+function ProgressLine:paintTo(bb, x, y)
+    local w, h = self.w, Screen:scaleBySize(8)
+    local lh = Screen:scaleBySize(2)
+    local ly = y + math.floor((h - lh) / 2)      -- 细线居中，刻度上下各伸出一点
+    local done = math.floor(w * math.max(0, math.min(tonumber(self.frac) or 0, 1)))
+    if done > 0 then bb:paintRect(x, ly, done, lh, INK_BLACK) end
+    if w - done > 0 then bb:paintRect(x + done, ly, w - done, lh, INK_FAINT) end
+    local tw = math.max(1, Screen:scaleBySize(1))
+    for _, q in ipairs({ 0.25, 0.5, 0.75 }) do
+        bb:paintRect(x + math.floor(w * q) - math.floor(tw / 2), y, tw, h, INK_DIM)
     end
-    if w - done > 0 then
-        table.insert(g, LineWidget:new{ background = INK_FAINT, dimen = Geom:new{ w = w - done, h = h } })
-    end
-    return g
 end
 
 -- 整屏排版。垂直方向不拉伸：顶部留 15%，内容按固定间距往下排，电量贴底。
@@ -560,7 +566,7 @@ local function layout(data, d, fin_data)
         add(vspace(Screen:scaleBySize(6)))
         add(txt(Stats.currentLine(cur.authors, cur.frac, cur.left), faceSmall(), INK_DIM, usable))
         add(vspace(Screen:scaleBySize(12)))
-        add(progressLine(cur.frac, usable))
+        add(ProgressLine:new{ frac = cur.frac, w = usable })
     end
 
     -- 电量：极小灰字，右下角。不放时钟——这屏一渲染就静止了，停住的钟只会误导。
