@@ -450,7 +450,7 @@ local function vspace(px)
     return VerticalSpan:new{ width = math.max(0, math.floor(px)) }
 end
 
--- 30 天曲线：细柱、深灰、柱间留缝，没读的日子留空。不画标题、峰值、日均线、
+-- 30 天曲线：细柱、深灰、柱间留缝，没读的日子只留 1px 刻度。不画标题、峰值、日均线、
 -- 横轴文字——这版里它是一段节奏纹理，不是一张要读数的图表。
 -- 纵轴刻度取 max(峰值, 1 小时)，读得少的日子不会把柱子顶满整图。
 -- 最后一根是今天：熄屏时今天多半只读了一半，画成浅灰，免得曲线结尾看着总像塌了一截。
@@ -465,11 +465,17 @@ function CurveWidget:paintTo(bb, x, y)
     if n == 0 or self.w <= 0 or self.h <= 0 then return end
     local gap = self.gap
     local bar_w = math.max(1, math.floor((self.w - gap * (n - 1)) / n))
+    -- 读过的日子至少这么高，才和下面 1px 的空日刻度分得开（读 5 秒的日子原来也是 1px）
+    local min_h = math.max(2, Screen:scaleBySize(2))
     for i, v in ipairs(self.values) do
+        local bx = x + (i - 1) * (bar_w + gap)
         if v > 0 then
-            local h = math.max(1, math.floor(self.h * v / self.scale))
-            bb:paintRect(x + (i - 1) * (bar_w + gap), y + self.h - h, bar_w, h,
-                         i == n and INK_FAINT or INK_DIM)
+            local h = math.max(min_h, math.floor(self.h * v / self.scale))
+            bb:paintRect(bx, y + self.h - h, bar_w, h, i == n and INK_FAINT or INK_DIM)
+        else
+            -- 没读的日子留一道 1px 刻度。原来什么都不画，空档和柱间缝分不开，
+            -- 看不出曲线到底画到哪一天；深灰不用浅灰，1px 浅灰在墨水屏上会消失。
+            bb:paintRect(bx, y + self.h - 1, bar_w, 1, INK_DIM)
         end
     end
 end
