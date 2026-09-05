@@ -59,6 +59,12 @@ ok(S.shortTitle("Spider-Man") == "Spider-Man", "无空格连字符不碰", S.sho
 ok(S.shortTitle("红楼梦 — 脂评本") == "红楼梦", "破折号", S.shortTitle("红楼梦 — 脂评本"))
 ok(S.shortTitle("红楼梦") == "红楼梦", "没有副标题原样返回", S.shortTitle("红楼梦"))
 ok(S.shortTitle("：无正题") == "：无正题", "截完为空退回原名", S.shortTitle("：无正题"))
+-- 括号里多半是版本、丛书之类的说明，放不下时和副标题一样先丢
+ok(S.shortTitle("金瓶梅词话[梦梅馆校本]") == "金瓶梅词话", "方括号", S.shortTitle("金瓶梅词话[梦梅馆校本]"))
+ok(S.shortTitle("Dune (Deluxe Edition)") == "Dune", "圆括号", S.shortTitle("Dune (Deluxe Edition)"))
+ok(S.shortTitle("红楼梦（脂评本）") == "红楼梦", "全角圆括号", S.shortTitle("红楼梦（脂评本）"))
+ok(S.shortTitle("[丛书] 书名") == "[丛书] 书名", "括号开头截完为空，退回原名", S.shortTitle("[丛书] 书名"))
+ok(S.shortTitle("A: B [C]") == "A", "多种分隔符取最靠前的", S.shortTitle("A: B [C]"))
 ok(S.shortTitle(nil) == "", "nil 不炸", S.shortTitle(nil))
 
 print("== rowsOf ==")

@@ -172,10 +172,11 @@ function M.summaryLine(d, fin_total)
     return table.concat(parts, "  ·  ")
 end
 
--- 书名截短：单行放不下时先丢副标题。只认冒号和带空格的破折号，
--- "Spider-Man" 这种连字符不碰。截完为空就退回原名。
+-- 书名截短：单行放不下时先丢副标题。只认冒号、带空格的破折号和括号（括号里多半是
+-- "梦梅馆校本""Deluxe Edition"这类版本说明），"Spider-Man" 这种连字符不碰。
+-- 截完为空就退回原名。
 -- Lua 模式按字节匹配，多字节字符不能进字符类 [...]，所以分隔符逐个试，取最靠前的。
-local TITLE_SEPS = { "%s*：", "%s*:", "%s+%-+%s", "%s*—", "%s*–" }
+local TITLE_SEPS = { "%s*：", "%s*:", "%s+%-+%s", "%s*—", "%s*–", "%s*%[", "%s*%(", "%s*（" }
 function M.shortTitle(title)
     title = tostring(title or "")
     local best
