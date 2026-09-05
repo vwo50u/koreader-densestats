@@ -453,7 +453,7 @@ end
 -- 30 天曲线：细柱、深灰、柱间留缝，没读的日子只留 1px 刻度。不画标题、峰值、日均线、
 -- 横轴文字——这版里它是一段节奏纹理，不是一张要读数的图表。
 -- 纵轴刻度取 max(峰值, 1 小时)，读得少的日子不会把柱子顶满整图。
--- 最后一根是今天：熄屏时今天多半只读了一半，画成浅灰，免得曲线结尾看着总像塌了一截。
+-- 最后一根是今天：熄屏时今天多半只读了一半，画成空心，免得曲线结尾看着总像塌了一截。
 local CurveWidget = Widget:extend{ values = nil, w = 0, h = 0, scale = 3600, gap = 1 }
 
 function CurveWidget:getSize()
@@ -471,7 +471,17 @@ function CurveWidget:paintTo(bb, x, y)
         local bx = x + (i - 1) * (bar_w + gap)
         if v > 0 then
             local h = math.max(min_h, math.floor(self.h * v / self.scale))
-            bb:paintRect(bx, y + self.h - h, bar_w, h, i == n and INK_FAINT or INK_DIM)
+            local top = y + self.h - h
+            bb:paintRect(bx, top, bar_w, h, INK_DIM)
+            if i == n then
+                -- 今天画成空心柱：深灰描边、白芯。原来是 0xCC 的浅灰实心，真机上
+                -- 0x88 都已偏淡，0xCC 基本看不见，等于没画；描边不管灰阶怎么抖动
+                -- 都清楚，"还没读完的一天"这层意思也更直白。
+                local bw = math.max(1, Screen:scaleBySize(1))
+                if h > 2 * bw and bar_w > 2 * bw then
+                    bb:paintRect(bx + bw, top + bw, bar_w - 2 * bw, h - 2 * bw, Blitbuffer.COLOR_WHITE)
+                end
+            end
         else
             -- 没读的日子留一道 1px 刻度。原来什么都不画，空档和柱间缝分不开，
             -- 看不出曲线到底画到哪一天；深灰不用浅灰，1px 浅灰在墨水屏上会消失。
