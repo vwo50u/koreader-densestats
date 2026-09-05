@@ -99,8 +99,9 @@ local fmtHM, fmtClock, rowsOf = Stats.fmtHM, Stats.fmtClock, Stats.rowsOf
 
 -- ============================ 取数 ============================
 
--- 上次 collect() 时数据库有多大。查询耗时几乎只跟这个数走（三条 SQL 里两条要扫
--- page_stat_data），日志里带上它，才能把"这台设备慢"和"这个库大"分开看。
+-- 上次 collect() 时数据库有多大。查询耗时几乎只跟这个数走（逐日那条要扫
+-- page_stat_data，其余都是索引或主键点查），日志里带上它，才能把"这台设备慢"
+-- 和"这个库大"分开看。
 local last_db_bytes = -1
 
 -- 每次查询都必须带上 conn:exec 的第二个返回值当行数，理由见 stats.lua 的 rowsOf。
@@ -143,7 +144,7 @@ local function collect()
     local data = {}
     local function query()
 
-    -- 两条查询都要对几十万行做 GROUP BY / COUNT(DISTINCT)，不设这个就会落临时文件。
+    -- 逐日那条要对几十万行做 GROUP BY，不设这个就会落临时文件。
     -- 官方在重活前一律先设（statistics.koplugin/main.lua:347、
     -- coverbrowser 的 bookinfomanager.lua:239、vocabbuilder 的 db.lua:516）。
     -- 连接级 PRAGMA，不写库。busy_timeout 是给 WAL 关闭的老机器兜底（K2/DXG），
@@ -192,23 +193,16 @@ local function collect()
     -- duration > max_sec 的行根本不存在。留用它是有意的取舍：它正是 KOReader
     -- 自己在统计页上显示的那个"累计"，屏保跟它保持一致比自己重算更有意义。
     -- 注意 SUM 会忽略 NULL，长期没打开过的书 total_read_time 可能为 NULL。
-    local totals = queryRows(conn, string.format([[
-        SELECT (SELECT SUM(total_read_time) FROM book),
-               (SELECT COUNT(DISTINCT (start_time + %d) / 86400)
-                  FROM page_stat_data WHERE start_time > 0);
-    ]], off), 2)[1]
+    --
+    -- 原来这里还顺带 COUNT(DISTINCT 天号) 数全量的有记录天数。那是整表扫描，
+    -- 而它喂的"有效日均"在极简版里根本不上屏，每次熄屏白扫一遍。
+    local totals = queryRows(conn, "SELECT SUM(total_read_time) FROM book;", 1)[1]
     if totals then
         -- 千万别写成 `or 0`。SUM 忽略 NULL，全表 total_read_time 都是 NULL 时它
         -- 返回 NULL；强行折成 0 会把 stats.lua 里"没有全量汇总就退回按窗口算"
-        -- 那条回退路径彻底封死，屏幕上的累计时长和有效日均直接变成 0，
+        -- 那条回退路径彻底封死，屏幕上的累计时长直接变成 0，
         -- 而逐日明细里明明是有数据的。留 nil 才走得到回退。
-        -- 两个字段必须同进同退：只回退其中一个的话，会拿窗口内的时长去除以
-        -- 全量天数，有效日均会被系统性低估。
-        local all = tonumber(totals[1])
-        if all then
-            data.total_all = all
-            data.active_days_all = tonumber(totals[2]) or 0
-        end
+        data.total_all = tonumber(totals[1])
     end
 
     -- 当前在读 = 最近一条记录所属的那本。
@@ -225,17 +219,13 @@ local function collect()
     if last then
         local id = tonumber(last[1]) or 0
         local page, pages = tonumber(last[2]) or 0, tonumber(last[3]) or 0
-        -- COUNT(*) 是用来分辨"没有匹配的书"的。没有 GROUP BY 的聚合查询即使
-        -- 零匹配也照样返回一行（各列为 NULL），光看 title 是 nil 分不出
-        -- "book 表里没有这本书"和"这本书没有书名元数据"——前者该整块不显示，
-        -- 后者该显示 "?" 加上正确的页码。SQLite 默认不强制外键，孤儿 id_book
-        -- 是可能出现的。
-        local cur = queryRows(conn, string.format([[
-            SELECT b.title, b.authors, SUM(MIN(p.duration, %d)), COUNT(*)
-            FROM page_stat_data p JOIN book b ON b.id = p.id_book
-            WHERE p.id_book = %d;
-        ]], cap, id), 4)[1]
-        if cur and (tonumber(cur[4]) or 0) > 0 then
+        -- 只要书名和作者，按主键查 book 表就够了。原来这里 JOIN page_stat_data
+        -- 把这本书的时长也 SUM 了一遍，那个数从来没上过屏。
+        -- SQLite 默认不强制外键，孤儿 id_book 是可能出现的：查不到行就整块不显示；
+        -- 查到了但 title 为 NULL 是"这本书没有书名元数据"，显示 "?" 加上正确的页码。
+        local cur = queryRows(conn, string.format(
+            "SELECT title, authors FROM book WHERE id = %d;", id), 2)[1]
+        if cur then
             -- statistics 插件拿不到作者时写的是字面量 "N/A"（main.lua:162），
             -- 不是 NULL；多作者用换行分隔（与 doc_props.authors 同一约定）。
             local authors = cur[2] and tostring(cur[2]) or ""
@@ -244,7 +234,6 @@ local function collect()
             data.current = {
                 title   = tostring(cur[1] or "?"),
                 authors = authors,
-                sec     = tonumber(cur[3]) or 0,
                 page  = page,
                 pages = pages,
                 -- 夹到 1：记录当时的 total_pages 比当前页码小的话（换过字号）会超 100%
