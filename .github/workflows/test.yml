@@ -1,0 +1,22 @@
+name: test
+on: [push, pull_request]
+
+jobs:
+  # stats.lua / finished.lua 的单测：不需要 KOReader，用 luajit + luafilesystem 就够
+  lua:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: leafo/gh-actions-lua@v13
+        with:
+          luaVersion: luajit-2.1
+      - uses: leafo/gh-actions-luarocks@v6
+      - run: luarocks install luafilesystem
+      - run: test/run.sh
+
+  # dev.sh install 的行为测试只能在 macOS 上跑（cp -X）
+  install-script:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v7
+      - run: test/test_install.sh

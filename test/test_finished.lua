@@ -1,7 +1,9 @@
 -- 用 KOReader 自带的 luajit 跑：./test/run.sh
 -- 不需要启动 KOReader，只用 lfs
 package.path = "./densestats.koplugin/?.lua;" .. package.path
-local lfs = require("libs/libkoreader-lfs")
+-- 优先用 KOReader 自带的 lfs；CI 上没有 KOReader.app，退回 luarocks 的 luafilesystem
+local has_ko, lfs = pcall(require, "libs/libkoreader-lfs")
+if not has_ko then lfs = require("lfs") end
 local F = require("finished")
 
 local pass, fail = 0, 0
