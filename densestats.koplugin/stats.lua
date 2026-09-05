@@ -67,65 +67,38 @@ function M.weekStartKey(now, week_start)
     return dayKey(os.time({ year = t.year, month = t.month, day = t.day - back, hour = 12 }))
 end
 
--- data: { by_day = {["YYYY-MM-DD"]=秒}, pages_by_day = {...} }
+-- data: { by_day = {["YYYY-MM-DD"]=秒}, total_all = 全量累计秒数（可省） }
 -- now:  时间戳（测试时注入）
+-- 只算上屏要用的：今日/昨日/本周（大字及其回退）、累计、连读、曲线。
+-- 旧版网格的本月/今年/日均/页数在极简版里没有位置，不再算。
 function M.derive(data, now, cfg)
     cfg = cfg or {}
     local curve_days = cfg.curve_days or 30
     local week_start = cfg.week_start or 2
 
     local by_day = (data and data.by_day) or {}
-    local pages_by_day = (data and data.pages_by_day) or {}
 
     local t = os.date("*t", now)
     local today_key = dayKey(now)
     local week_key = M.weekStartKey(now, week_start)
-    local month_key = os.date("%Y-%m", now)
-    local year_key = os.date("%Y", now)
 
-    local d = { today = 0, week = 0, month = 0, year = 0, total = 0 }
+    local d = { today = 0, week = 0, total = 0 }
     for day, s in pairs(by_day) do
         s = tonumber(s) or 0
         d.total = d.total + s
         if day == today_key then d.today = d.today + s end
         if day >= week_key and day <= today_key then d.week = d.week + s end
-        if day:sub(1, 7) == month_key then d.month = d.month + s end
-        if day:sub(1, 4) == year_key then d.year = d.year + s end
     end
 
-    -- 时段日均：除以已过去的天数（含今天）。空着的日子也属于这一周/这一月，
-    -- 除以"有记录的天数"会把偷懒的日子抹掉，得出一个自我安慰的数。
-    -- 曲线上那条虚线是终身有效日均，口径不同，正好互为对照。
-    local elapsed_week = (t.wday - week_start) % 7 + 1
-    d.avg_week = d.week / elapsed_week
-    d.avg_month = d.month / t.day
-
-    d.pages_today, d.pages_week = 0, 0
-    for day, n in pairs(pages_by_day) do
-        n = tonumber(n) or 0
-        if day == today_key then d.pages_today = d.pages_today + n end
-        if day >= week_key and day <= today_key then d.pages_week = d.pages_week + n end
-    end
-
-    d.curve, d.curve_total = {}, 0
+    d.curve = {}
     for i = curve_days - 1, 0, -1 do
         local k = dayKey(os.time({ year = t.year, month = t.month, day = t.day - i, hour = 12 }))
-        local v = tonumber(by_day[k]) or 0
-        d.curve[#d.curve + 1] = v
-        d.curve_total = d.curve_total + v
+        d.curve[#d.curve + 1] = tonumber(by_day[k]) or 0
     end
 
-    -- "有记录的天"以真正读过（秒数 > 0）为准，0 秒或脏值不算
-    -- 累计和"有记录天数"优先用调用方给的全量汇总（逐日明细只覆盖近一年多，
-    -- 拿窗口内的数据当累计会少算）。没有就退回按窗口算。
-    local active = 0
-    for _, v in pairs(by_day) do
-        if (tonumber(v) or 0) > 0 then active = active + 1 end
-    end
-    d.window_total = d.total
+    -- 累计优先用调用方给的全量汇总（逐日明细只覆盖近一年多，拿窗口内的数据
+    -- 当累计会少算）。没有就退回按窗口求和。
     d.total = tonumber(data and data.total_all) or d.total
-    d.active_days = tonumber(data and data.active_days_all) or active
-    d.avg_active = d.active_days > 0 and (d.total / d.active_days) or 0
 
     -- 连续天数：今天还没读不算断，从昨天往回数。
     -- 加上限兜底，防止数据异常（时钟回拨造出的怪日期）把循环拖死。

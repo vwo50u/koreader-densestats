@@ -61,7 +61,6 @@ local CFG = {
     curve_days = 30,
     window_days = 400,   -- 逐日明细只查这个窗口；累计另走 book 表汇总
     finished_cache_hours = 12,  -- sidecar 扫描结果缓存时长
-    cache_titles = 60,          -- 缓存里最多保留多少本书名（渲染时要整份解析）
     tz_offset = nil,            -- 分日用的时区偏移（秒）。nil = 按进程时区自动推断，见 tzOffset
 }
 -- =================================================================
@@ -189,8 +188,7 @@ local function collect()
     end
     data.by_day = by_day
 
-    -- 页数不再查：crengine 下页码随字号浮动，"今日 46 页"说明不了什么。
-    -- 那两格换成了本周/本月日均（stats.lua 从 by_day 直接算），少一条 SQL。
+    -- 页数不查：crengine 下页码随字号浮动，"今日 46 页"说明不了什么。
 
     -- 累计时长直接取 book 表的汇总列，比全表求和快一个数量级。
     -- 口径说明（原来这里的注释写的是"和逐行截断的结果一致"，那是错的）：
@@ -285,14 +283,9 @@ local function loadCache()
     cache_ts_mem = 0
     local ok, s = pcall(LuaSettings.open, LuaSettings, cachePath())
     if not ok or not s then return nil end
-    local months = s:readSetting("months")
-    if type(months) ~= "table" then return nil end
-    local c = {
-        ts     = tonumber(s:readSetting("ts")) or 0,
-        total  = tonumber(s:readSetting("total")) or 0,
-        months = months,
-        titles = s:readSetting("titles") or {},
-    }
+    local total = tonumber(s:readSetting("total"))
+    if not total then return nil end
+    local c = { ts = tonumber(s:readSetting("ts")) or 0, total = total }
     cache_ts_mem = c.ts
     return c
 end
@@ -302,20 +295,9 @@ local function cacheFresh(ts)
 end
 
 local function saveCache(summary)
-    -- 只留最近 CFG.cache_titles 本：屏幕上最多显示十几行，而这个文件每次构建
-    -- 屏保都要解析一遍，无上限增长会把成本压到入睡路径上。
-    -- 总数 total 仍是全量，标题栏的"共 N 本"不受影响。
-    local sorted = {}
-    for _, t in ipairs(summary.titles or {}) do sorted[#sorted + 1] = t end
-    table.sort(sorted, function(a, b)
-        return (a.date or a.month or "") > (b.date or b.month or "")
-    end)
-    local titles = {}
-    for i = 1, math.min(#sorted, CFG.cache_titles) do
-        local t = sorted[i]
-        titles[i] = { title = t.title, month = t.month, date = t.date or "" }
-    end
-
+    -- 缓存里只有时间戳和总数：屏幕上就一行"读完 N 本"。原来还存最近几十本的
+    -- 书名和逐月计数，那是已删掉的"已读完列表"的遗留，却让每次熄屏都多解析一遍。
+    --
     -- 先写临时文件再 rename 覆盖过去。LuaSettings:flush 内部是
     -- io.open(path, "wb")（util.lua:1130），**原地截断**，不是原子替换；
     -- 而扫描现在跑在子进程里，父进程随时可能在熄屏路径上 loadCache()，
@@ -335,8 +317,6 @@ local function saveCache(summary)
         local s = LuaSettings:open(tmp)
         s:saveSetting("ts", ts)
         s:saveSetting("total", summary.total)
-        s:saveSetting("months", summary.months)
-        s:saveSetting("titles", titles)
         s:flush()
     end)
     if ok then

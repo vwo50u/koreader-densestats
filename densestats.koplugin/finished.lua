@@ -68,18 +68,6 @@ function M.readSidecar(path, loader)
     return s.status, s.modified, t.doc_path
 end
 
--- hash 存放模式下 .sdr 目录名就是书的 md5，拿它当书名会在屏幕上显示成
--- 一长串十六进制。这种情况下退回 sidecar 里记的 doc_path，取文件名。
-function M.titleFrom(sdr_name, doc_path)
-    if doc_path and #sdr_name == 32 and sdr_name:match("^%x+$") then
-        local base = doc_path:match("([^/]+)$")
-        if base and base ~= "" then
-            return base:match("^(.*)%.[^.]*$") or base
-        end
-    end
-    return sdr_name
-end
-
 -- 绝不进入的目录。前三个是系统伪文件系统；/mnt/base-us 是 Kindle 上 /mnt/us
 -- 的另一个视图——同一份文件系统挂两次，不排除就会把每本书数两遍。
 -- 这份名单抄自官方的文件搜索（filemanagerfilesearcher.lua 的 sys_folders）。
@@ -123,10 +111,11 @@ function M.collectSidecars(root, lfs, max_depth, out)
     return out
 end
 
--- 汇总：{ months = { ["2026-08"] = 2, ... }, total = n, titles = { {title=,month=} } }
--- title 从 sidecar 路径的 .sdr 目录名反推（够用，且不必解析整个 metadata）
+-- 汇总：{ total = 读完本数 }。只要总数——屏幕上就一行"读完 N 本"。
+-- 原来还带逐月计数和书名列表，那是已删掉的"已读完列表"的遗留，只会让缓存文件
+-- 和子进程回传的负载变大。
 function M.summarize(roots, lfs, loader)
-    local months, titles, total = {}, {}, 0
+    local total = 0
     -- 两张表，别合成一张：seen_path 记"这个 sidecar 文件已经读过"，
     -- seen_book 记"这本书已经计过数"。合用一张的话，没有 doc_path 时
     -- 书的键就等于文件路径，而它刚刚才被置位，于是一本都数不出来。
@@ -138,7 +127,7 @@ function M.summarize(roots, lfs, loader)
         for _, path in ipairs(M.collectSidecars(root, lfs)) do
             if not seen_path[path] then
                 seen_path[path] = true
-                local status, modified, doc_path = M.readSidecar(path, loader)
+                local status, _, doc_path = M.readSidecar(path, loader)
                 -- 书的去重键优先用 doc_path：同一本书可以在 doc / dir / hash
                 -- 三个位置同时留下 sidecar（切换过存放位置而旧的还没被清），
                 -- 只按文件路径去重会把它数两遍。
@@ -146,34 +135,12 @@ function M.summarize(roots, lfs, loader)
                 if status == "complete" and not seen_book[key] then
                     seen_book[key] = true
                     total = total + 1
-                    local m = modified and tostring(modified):sub(1, 7) or "?"
-                    months[m] = (months[m] or 0) + 1
-                    local dir = path:match("([^/]+)%.sdr/[^/]+$") or path
-                    titles[#titles + 1] = {
-                        title = M.titleFrom(dir, doc_path),
-                        month = m,
-                        date = modified and tostring(modified) or "",
-                    }
                 end
             end
         end
       end
     end
-    return { months = months, total = total, titles = titles }
-end
-
--- 取最近 n 个月，降序，返回 { {month=, n=}, ... }
-function M.recentMonths(summary, n)
-    local keys = {}
-    for m in pairs(summary.months) do
-        if m ~= "?" then keys[#keys + 1] = m end
-    end
-    table.sort(keys, function(a, b) return a > b end)
-    local out = {}
-    for i = 1, math.min(n, #keys) do
-        out[i] = { month = keys[i], n = summary.months[keys[i]] }
-    end
-    return out
+    return { total = total }
 end
 
 return M

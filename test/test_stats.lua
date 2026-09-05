@@ -95,24 +95,22 @@ print("== derive：真实数据（对照 KOReader 截图）==")
 local real = { by_day = {
     ["2026-08-02"]=5, ["2026-08-03"]=8591, ["2026-08-04"]=2723, ["2026-08-05"]=5084,
     ["2026-08-06"]=3353, ["2026-08-07"]=2521, ["2026-08-08"]=2657, ["2026-08-10"]=5375,
-}, pages_by_day = { ["2026-08-10"]=108, ["2026-08-08"]=54 } }
+} }
 local d = S.derive(real, ts(2026,8,10,23), { curve_days=30, week_start=2 })
 ok(S.fmtHM(d.today) == "1h29", "今日 = 5375 秒", S.fmtHM(d.today))
 ok(S.derive(real, ts(2026,8,11,23), { curve_days=30, week_start=2 }).yesterday == d.today, "昨日 = 前一天的今日")
 ok(d.week == 5375, "本周从周一算起,只有今天", d.week)
-ok(d.month == 30309, "本月 = 全部", d.month)
-ok(d.year == d.month, "今年 = 本月（数据只有 8 月）")
 ok(d.streak == 1, "8-09 断档,连续只有 1 天", d.streak)
-ok(d.pages_today == 108 and d.pages_week == 108, "页数汇总", d.pages_today)
--- 时段日均：除以"已过去的天数"（含今天），不是除以有记录的天数——
--- 空着的日子也是这一周/这一月的一部分。
-ok(d.avg_week == 5375, "8-10 是周一，本周日均 = 本周 / 1", d.avg_week)
-ok(math.abs(d.avg_month - 30309 / 10) < 1e-6, "本月日均 = 本月 / 10 天", d.avg_month)
-local mid = S.derive(real, ts(2026,8,12,23), { curve_days=30, week_start=2 })
-ok(mid.avg_week == 5375 / 3, "周三：本周日均按 3 天算", mid.avg_week)
 ok(#d.curve == 30, "曲线固定 30 格", #d.curve)
 ok(d.curve[30] == 5375 and d.curve[29] == 0, "最后一格是今天,前一天为 0")
-ok(d.active_days == 8, "有记录的天数", d.active_days)
+
+print("== derive：只保留上屏的字段 ==")
+-- 极简版只画今日/昨日/本周、累计、连读、曲线。下面这些是旧版网格和日均线的
+-- 遗留，算了没人读，删掉后不该再冒出来。
+for _, k in ipairs({ "month", "year", "avg_week", "avg_month", "pages_today", "pages_week",
+                     "active_days", "avg_active", "window_total", "curve_total" }) do
+    ok(d[k] == nil, "derive 不再返回 " .. k, tostring(d[k]))
+end
 
 print("== derive：连续天数 ==")
 local run = { by_day = { ["2026-08-08"]=60, ["2026-08-09"]=60, ["2026-08-10"]=60 } }
@@ -128,37 +126,29 @@ print("== derive：跨月跨年 ==")
 local cross = { by_day = { ["2025-12-31"]=3600, ["2026-01-01"]=1800 } }
 local dc = S.derive(cross, ts(2026,1,1))
 ok(dc.today == 1800, "元旦当天", dc.today)
-ok(dc.month == 1800, "本月不含去年 12 月", dc.month)
-ok(dc.year == 1800, "今年不含去年", dc.year)
 ok(dc.total == 5400, "累计含全部", dc.total)
 ok(dc.streak == 2, "跨年连续天数", dc.streak)
 
 print("== derive：空库与脏数据 ==")
 local e = S.derive({}, ts(2026,8,10))
-ok(e.total == 0 and e.streak == 0 and e.avg_active == 0, "空库全 0")
+ok(e.total == 0 and e.streak == 0 and e.today == 0, "空库全 0")
 ok(#e.curve == 30, "空库曲线仍是 30 格")
 local dirty = { by_day = { ["2026-08-10"]="5375", ["2026-08-09"]=false, ["2026-08-08"]=60 } }
 local dd = S.derive(dirty, ts(2026,8,10))
 ok(dd.today == 5375, "字符串数字能算", dd.today)
 ok(dd.streak == 1, "脏值不算读过,连续在此中断", dd.streak)
-ok(dd.active_days == 2, "脏值不计入有记录天数", dd.active_days)
 local zero = { by_day = { ["2026-08-10"]=0, ["2026-08-09"]=60 } }
 ok(S.derive(zero, ts(2026,8,10)).streak == 1, "今天记 0 秒不算读过,从昨天算起",
    S.derive(zero, ts(2026,8,10)).streak)
 ok(S.derive(nil, ts(2026,8,10)).total == 0, "data 为 nil 不炸")
 
 print("== derive：累计走全量汇总,逐日只覆盖窗口 ==")
-local win = { by_day = { ["2026-08-10"]=5375, ["2026-08-09"]=60 },
-              total_all = 999999, active_days_all = 300 }
+local win = { by_day = { ["2026-08-10"]=5375, ["2026-08-09"]=60 }, total_all = 999999 }
 local dw = S.derive(win, ts(2026,8,10))
 ok(dw.total == 999999, "累计用 total_all,不是窗口内求和", dw.total)
-ok(dw.active_days == 300, "有记录天数用 active_days_all", dw.active_days)
-ok(math.floor(dw.avg_active) == 3333, "有效日均 = 累计/全量天数", dw.avg_active)
-ok(dw.window_total == 5435, "窗口内合计仍保留", dw.window_total)
 ok(dw.today == 5375, "今日不受影响", dw.today)
 local nofall = S.derive({ by_day = { ["2026-08-10"]=3600 } }, ts(2026,8,10))
-ok(nofall.total == 3600 and nofall.active_days == 1, "没给全量汇总时退回窗口值",
-   nofall.total .. "/" .. nofall.active_days)
+ok(nofall.total == 3600, "没给全量汇总时退回窗口内求和", nofall.total)
 
 print(string.format("\n%d passed, %d failed", pass, fail))
 os.exit(fail == 0 and 0 or 1)
