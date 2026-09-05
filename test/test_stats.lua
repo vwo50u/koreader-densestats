@@ -150,5 +150,33 @@ ok(dw.today == 5375, "今日不受影响", dw.today)
 local nofall = S.derive({ by_day = { ["2026-08-10"]=3600 } }, ts(2026,8,10))
 ok(nofall.total == 3600, "没给全量汇总时退回窗口内求和", nofall.total)
 
+print("== dayKeyOf / dayCutoff / tzOffsetAt ==")
+-- 函数还不存在时 pcall 返回 false，让这里显示 FAIL 而不是让整个文件炸掉
+local function try(f, ...) local okc, v = pcall(f, ...); return okc and v or nil end
+ok(try(S.dayKeyOf, 0) == "1970-01-01", "天号 0 是纪元起点", try(S.dayKeyOf, 0))
+ok(try(S.dayKeyOf, 19000) == "2022-01-08", "天号按 UTC 转成日期", try(S.dayKeyOf, 19000))
+ok(try(S.dayKeyOf, nil) == "1970-01-01", "nil 不炸")
+local day8 = 1641600000                                   -- 2022-01-08 00:00 UTC
+ok(try(S.dayCutoff, day8 + 3600, 0, 1) == day8 - 86400, "偏移 0：回退 1 天到 UTC 零点",
+   try(S.dayCutoff, day8 + 3600, 0, 1))
+ok(try(S.dayCutoff, day8 + 3600, 28800, 0) == day8 - 28800, "偏移 +8h：01:00 UTC 是当地 09:00，截到当地零点",
+   try(S.dayCutoff, day8 + 3600, 28800, 0))
+ok(try(S.dayCutoff, day8 - 3600, 28800, 0) == day8 - 28800, "23:00 UTC 已是当地次日，截断点跟着后移",
+   try(S.dayCutoff, day8 - 3600, 28800, 0))
+-- 截断点必须落在桶的边界上，否则最早那个桶只覆盖半天
+local cut = try(S.dayCutoff, day8 + 3600, 28800, 400)
+ok(cut and (cut + 28800) % 86400 == 0, "400 天前的截断点对齐到当地零点", cut)
+ok(cut and try(S.dayKeyOf, (cut + 28800) / 86400) == "2020-12-04", "截断点所在的桶就是那一天",
+   cut and try(S.dayKeyOf, (cut + 28800) / 86400))
+-- 本机偏移：与 strftime 的 %z 一致；用它切出的桶名要等于本地日期——derive 的
+-- today_key 就是本地日期，两边对不上"今日"就会漏
+local now = os.time()
+local off = try(S.tzOffsetAt, now)
+local z = os.date("%z", now)                              -- 如 +0800
+local want = tonumber(z:sub(1, 3)) * 3600 + tonumber(z:sub(1, 1) .. z:sub(4, 5)) * 60
+ok(off == want, "偏移等于 %z 给出的值", tostring(off) .. " vs " .. want)
+ok(off and try(S.dayKeyOf, math.floor((now + off) / 86400)) == os.date("%Y-%m-%d", now),
+   "按偏移切出的桶名等于本地日期", off and try(S.dayKeyOf, math.floor((now + off) / 86400)))
+
 print(string.format("\n%d passed, %d failed", pass, fail))
 os.exit(fail == 0 and 0 or 1)

@@ -78,28 +78,13 @@ local function tzOffset()
     local env = os.getenv("DENSESTATS_TZ_OFFSET")
     if env then return math.floor(tonumber(env) or 0) end
     if CFG.tz_offset then return CFG.tz_offset end
-    local now = os.time()
-    local u = os.date("!*t", now)
-    u.isdst = false
-    return math.floor(os.difftime(now, os.time(u)))
+    return Stats.tzOffsetAt(os.time())
 end
 
--- 天号转回日期字符串。天号 = (start_time + 时区偏移) / 86400，乘回去正好是
--- "当地那天零点"对应的 UTC 秒数，所以这里必须用 os.date("!...") 按 UTC 格式化；
--- 用本地格式化会把偏移再叠一次，跨时区设备上日期会整体错一天。
-local function dayKeyOf(n)
-    return os.date("!%Y-%m-%d", (tonumber(n) or 0) * 86400)
-end
-
--- 往回 days 天的截断点，对齐到"当地日期的零点"。
--- 不对齐的话最早那个桶只覆盖半天，它的汇总值是残缺的。逐日时长那条只影响
--- 400 天前的边界（谁也用不到），但页数那条只查 9 天，边界离「本周」很近，
--- 必须对齐——实测不对齐时正好有一天的页数偏小。
-local function dayCutoff(now, off, days)
-    return (math.floor((now + off) / 86400) - days) * 86400 - off
-end
-
+-- 天号 ↔ 日期、截断点、时区偏移这三个纯函数放在 stats.lua 里，好用 luajit 单测；
+-- 对齐和口径的说明见那边。
 local fmtHM, fmtClock, rowsOf = Stats.fmtHM, Stats.fmtClock, Stats.rowsOf
+local dayKeyOf, dayCutoff = Stats.dayKeyOf, Stats.dayCutoff
 
 -- ============================ 取数 ============================
 

@@ -67,6 +67,29 @@ function M.weekStartKey(now, week_start)
     return dayKey(os.time({ year = t.year, month = t.month, day = t.day - back, hour = 12 }))
 end
 
+-- 下面三个是 main.lua 取数用的日界换算，放在这里只为能用 luajit 单测。
+
+-- 天号转回日期串。天号 = floor((start_time + 时区偏移) / 86400)，乘回去正好是
+-- "当地那天零点"对应的 UTC 秒数，所以必须用 os.date("!...") 按 UTC 格式化；
+-- 用本地格式化会把偏移再叠一次，跨时区设备上日期整体错一天。
+function M.dayKeyOf(n)
+    return os.date("!%Y-%m-%d", (tonumber(n) or 0) * 86400)
+end
+
+-- 往回 days 天的截断点：当地日期零点对应的 UTC 秒数。不对齐的话最早那个桶只
+-- 覆盖半天，它的汇总值是残缺的（以前页数只查 9 天时实测过：正好有一天偏小）。
+function M.dayCutoff(now, off, days)
+    return (math.floor((now + off) / 86400) - days) * 86400 - off
+end
+
+-- 某一时刻的"本地时间 − UTC"（秒）。跟 SQLite 的 'localtime' 同源（都是进程时区），
+-- 所以 by_day 按这个偏移切出的桶，和 derive 里按本地日期取的 today_key 才对得上。
+function M.tzOffsetAt(now)
+    local u = os.date("!*t", now)
+    u.isdst = false
+    return math.floor(os.difftime(now, os.time(u)))
+end
+
 -- data: { by_day = {["YYYY-MM-DD"]=秒}, total_all = 全量累计秒数（可省） }
 -- now:  时间戳（测试时注入）
 -- 只算上屏要用的：今日/昨日/本周（大字及其回退）、累计、连读、曲线。
