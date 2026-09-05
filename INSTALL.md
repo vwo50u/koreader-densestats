@@ -1,4 +1,4 @@
-# 装到 Kindle
+# 装到设备
 
 ## 复制什么
 
@@ -19,13 +19,17 @@ densestats.koplugin/
 
 ## 放在哪
 
-设备上的 `koreader/plugins/` 目录下，保持文件夹名不变：
+设备上 KOReader 的 `plugins/` 目录下，保持文件夹名不变：
 
 ```
 Kindle: /mnt/us/koreader/plugins/densestats.koplugin/
+Kobo:   /mnt/onboard/.adds/koreader/plugins/densestats.koplugin/
 ```
 
-USB 连上电脑后，就是 Kindle 盘符根目录的 `koreader/plugins/`。
+USB 连上电脑后，Kindle 是盘符根目录的 `koreader/plugins/`，Kobo 是根目录下
+隐藏的 `.adds/koreader/plugins/`。在 Mac 上直接 `./dev.sh install` 即可：它会
+自动认设备、用 `cp -X` 拷（不留 AppleDouble 伪文件）、删掉设备上已不存在的
+模块，最后 diff 一遍。
 
 ## 怎么启用
 
@@ -57,7 +61,10 @@ USB 连上电脑后，就是 Kindle 盘符根目录的 `koreader/plugins/`。
   （搜 `Failed to initialize statistics`，多半是统计库迁移中断）。
 - **屏保是空白或构建失败** → 日志里会有 `densestats: build failed` 加具体错误。
 - **每次熄屏很慢** → 日志里每次熄屏都有一行 `densestats build: 合计 Xms`，
-  分了 SQL / 汇总 / 缓存 / 排版四段，直接看是哪一段贵。
+  分了 SQL 和排版两段，后面还带库大小、时区偏移（`tz=`）和读完本数，直接看是
+  哪一段贵。
+- **换了设备后"今日"对不上** → 看同一行的 `tz=`：它应当等于设备本地时间与 UTC
+  的差（Kindle 是 0），与统计插件日历页的口径一致。
 - **数字看着不对** → 用 `sql/queries.sql` 在电脑上对着同一个库核一遍。
 
 渲染整体包在 pcall 里，最坏情况是退回 KOReader 内置的阅读进度页，

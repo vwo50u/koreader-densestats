@@ -4,8 +4,9 @@
 
 A dense reading-statistics screensaver for [KOReader](https://github.com/koreader/koreader).
 
-It takes over KOReader's built-in `readingprogress` screensaver type — the one
-`frontend/ui/screensaver.lua` reaches through `Screensaver.getReaderProgress()`. Keep
+It takes over KOReader's built-in `readingprogress` screensaver type: in that mode
+`frontend/ui/screensaver.lua` asks the statistics plugin for a widget through
+`ui.statistics:onShowReaderProgress(true)`, and this plugin wraps that method. Keep
 choosing "Show reading progress on the sleep screen" in the settings; what gets drawn is
 this plugin's version instead.
 
@@ -67,8 +68,8 @@ Start here — it has nothing to do with KOReader:
 sqlite3 -header -column /path/to/statistics.sqlite3 < sql/queries.sql
 ```
 
-Pay attention to section 3, "finished-book detection". It is a heuristic and it
-definitely gets some books wrong.
+The finished-book count cannot be checked there: it comes from the sidecars, not from
+the database (see "How the figures are defined").
 
 ### 2. On macOS
 
@@ -85,18 +86,22 @@ Then:
 ./dev.sh run                                   # launch
 ```
 
-**Desktop builds have no sleep screen**, so the hook never fires. Use the plugin's own
-On the device, just lock the screen. On desktop, where sleep is unavailable,
-start with DENSESTATS_AUTOSHOW=1 and the same widget pops up after six seconds.
+**Desktop builds have no sleep screen**, so the hook never fires. Start with
+`DENSESTATS_AUTOSHOW=1` instead and the same widget pops up after six seconds;
+`DENSESTATS_SHOT=/path/to/shot.png` saves it as a PNG two seconds later. On a device,
+just lock the screen.
 
 Building from source with `./kodev build` is not worth it for UI work — compiling
 koreader-base from scratch on macOS arm64 takes hours.
 
 ### 3. On a device
 
-Copy the plugin folder into `koreader/plugins/` and restart. Logs land in
-`koreader/crash.log` (`logger.warn` output goes there). KOReader's bundled SSH plugin
-lets you tail it remotely.
+With the device mounted over USB, `./dev.sh install` copies the plugin into the right
+place (`koreader/plugins/` on a Kindle, `.adds/koreader/plugins/` on a Kobo) and diffs
+the result; INSTALL.md covers doing it by hand. Restart KOReader afterwards. Logs land
+in `koreader/crash.log` (`logger.warn` output goes there); every sleep writes a
+`densestats build:` line with the SQL and layout times, the database size and the
+time-zone offset in use. KOReader's bundled SSH plugin lets you tail it remotely.
 
 ## KOReader behaviour worth knowing
 
@@ -122,8 +127,10 @@ nobody has to look them up again (line numbers are from KOReader 2026.07):
   (`textwidget.lua:112-113`), so any string in the right tier works as a probe for
   measuring row height.
 - **Plugin load order**: plugins are instantiated in directory-name order, so `densestats`
-  comes before `statistics` and `self.ui.statistics` does not exist yet during `init()` —
-  the hook has to go in `onReaderReady`. KOReader 2026.07 also wraps plugin `onXxx`
+  comes before `statistics` and `self.ui.statistics` does not exist yet during `init()`.
+  The hook is installed from `registerPostInitCallback`, which both ReaderUI and the
+  file manager run once every module is registered; `onReaderReady` exists only in
+  ReaderUI and is kept as a fallback. KOReader 2026.07 also wraps plugin `onXxx`
   handlers in *callable tables* (a metatable with `__call`), so checking
   `type == "function"` is not enough.
 
@@ -136,10 +143,10 @@ remains open.
 
 - **Landscape is unverified.** The orientation-independent sizing is in place, but it has
   never been run sideways on real hardware.
-- **No fallback if even the smallest type step overflows.** Unreachable in portrait at
-  normal DPI, but content would be clipped if it happened. The fix would be dropping a
-  whole section, not shrinking type further.
-- **Finished-book detection is a heuristic** — see the notes below.
+- **Content taller than the screen only eats the top margin.** The content is fixed and
+  fits in both orientations at normal DPI, so this should not happen; if it did, the fix
+  would be dropping a section, not shrinking type.
+- **Only books marked finished in KOReader are counted** — see the notes below.
 
 All rendering is wrapped in `pcall`; on failure it falls back to the built-in page, so a
 bug here can never keep the device awake.
@@ -147,14 +154,20 @@ bug here can never keep the device awake.
 ## How the figures are defined
 
 - **Per-page duration is capped.** Raw durations include "forgot to close the book" noise,
-  so each is capped at `CFG.max_sec = 120`, matching what the statistics plugin does
-  itself. The lifetime total is therefore lower than `book.total_read_time`.
-- **Finished detection.** Completion status lives in the sidecar next to the book, not in
-  the database. This uses `MAX(page/total_pages) >= 0.97` plus the month of the last read
-  session — an estimate.
-- **Time zones.** `start_time` is in UTC seconds; the offset is computed in Lua and passed
-  into SQL rather than relying on SQLite's `localtime` modifier, because Kindles usually
-  run with the system time zone set to UTC.
+  so the per-day figures cap each page at the statistics plugin's own "max time per page"
+  setting (`CFG.max_sec = 120` is only the fallback when that setting is absent).
+- **The lifetime total is KOReader's own.** It is the sum of `book.total_read_time`, the
+  same figure the statistics plugin shows, rather than a recount from the page table, so
+  the two never disagree.
+- **Finished books** are the sidecars whose `summary.status` is `complete`, i.e. books
+  marked finished in KOReader. The library and the docsettings directories are scanned
+  in a subprocess at most every 12 hours and the count is cached; "Rescan finished
+  books" in the menu (also bindable as a gesture) forces it.
+- **Time zones.** `start_time` is in UTC seconds. Days are cut at local midnight using
+  the process time zone, which is what the statistics plugin's `localtime` grouping does
+  too; on a Kindle, whose system zone is UTC, the offset is 0. The value in use is
+  printed as `tz=` in the build log line; `DENSESTATS_TZ_OFFSET` overrides it for reading
+  a device's database on another machine.
 - **Streaks.** Not having read *today* does not break the streak; counting starts from
   yesterday.
 

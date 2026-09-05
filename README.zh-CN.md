@@ -2,9 +2,10 @@
 
 [English](README.md) · **简体中文**
 
-高密度阅读统计睡眠屏幕。接管 KOReader 内置的 `readingprogress` 睡眠屏幕类型
-（`frontend/ui/screensaver.lua` 里 `widget = Screensaver.getReaderProgress()`），
-设置里仍然选「在休眠屏幕上显示阅读进度」，画出来的换成本插件的版本。
+高密度阅读统计睡眠屏幕。接管 KOReader 内置的 `readingprogress` 睡眠屏幕类型：
+该模式下 `frontend/ui/screensaver.lua` 通过 `ui.statistics:onShowReaderProgress(true)`
+向统计插件要部件，本插件包住这个方法。设置里仍然选「在休眠屏幕上显示阅读进度」，
+画出来的换成本插件的版本。
 
 数据只读 statistics 插件的 `statistics.sqlite3`，不写。**statistics 插件必须保持启用**
 （screensaver.lua 会检查 `ui.statistics`，不在就退回随机图片）。
@@ -51,7 +52,7 @@ dev.sh           开发脚本
 sqlite3 -header -column /path/to/statistics.sqlite3 < sql/queries.sql
 ```
 
-重点核对第 3 段「读完判定明细」——那是启发式，肯定有误判。
+读完本数在这里核不了：它来自 sidecar，不在数据库里（见下面的口径说明）。
 
 ### 2. macOS 桌面调试
 
@@ -67,17 +68,20 @@ macOS 版 KOReader **不在 Releases 里**，要从 GitHub Actions 的构建产�
 ./dev.sh run                                   # 启动
 ```
 
-**桌面平台没有睡眠屏幕功能**，所以钩子不会被触发。用插件自带的调试入口：
-设备上直接锁屏即可。桌面上睡眠功能不可用，用 DENSESTATS_AUTOSHOW=1 启动，
-六秒后会自动弹出同一份部件。
+**桌面平台没有睡眠屏幕功能**，所以钩子不会被触发。改用 `DENSESTATS_AUTOSHOW=1`
+启动，六秒后会自动弹出同一份部件；再加 `DENSESTATS_SHOT=/path/to/shot.png`
+会在两秒后把它存成 PNG。真机上直接锁屏就是。
 
 不建议从源码 `./kodev build` —— 本机缺 cmake / autoconf / nasm / luarocks，
 在 macOS arm64 上从零编译 koreader-base 是几小时起的活，调 UI 用不上。
 
 ### 3. 真机
 
-插件文件夹丢进设备的 `koreader/plugins/`，重启。日志在 `koreader/crash.log`
-（`logger.warn` 的输出会进去）。装 KOReader 自带的 SSH 插件可以远程 tail。
+设备 USB 挂载后 `./dev.sh install` 会把插件拷到正确位置（Kindle 是
+`koreader/plugins/`，Kobo 是 `.adds/koreader/plugins/`）并 diff 校验，手动拷法见
+INSTALL.md。拷完重启 KOReader。日志在 `koreader/crash.log`（`logger.warn` 的输出
+会进去），每次熄屏都有一行 `densestats build:`，带 SQL / 排版耗时、库大小和用的
+时区偏移。装 KOReader 自带的 SSH 插件可以远程 tail。
 
 ## 已核实的 KOReader 行为
 
@@ -100,9 +104,11 @@ macOS 版 KOReader **不在 Releases 里**，要从 GitHub Actions 的构建产�
 - **`TextWidget` 的高度只取决于 face，与文本内容无关**
   （`textwidget.lua:112-113`），所以量行高用任意等档文字当探针都准。
 - **插件加载顺序**：插件按目录名字母序实例化，`densestats` 排在 `statistics`
-  前面，所以 `init()` 时 `self.ui.statistics` 还不存在，钩子必须挂在
-  `onReaderReady`。KOReader 2026.07 还把插件的 `onXxx` 处理器包成了「可调用的表」
-  （带 `__call` 的 metatable），判断时不能只认 `type == "function"`。
+  前面，所以 `init()` 时 `self.ui.statistics` 还不存在。钩子挂在
+  `registerPostInitCallback` 里，ReaderUI 和文件管理器都会在全部模块注册完之后
+  跑它；`onReaderReady` 只有 ReaderUI 有，留作兜底。KOReader 2026.07 还把插件的
+  `onXxx` 处理器包成了「可调用的表」（带 `__call` 的 metatable），判断时不能只认
+  `type == "function"`。
 
 ## 验证状态
 
@@ -111,20 +117,24 @@ macOS 版 KOReader **不在 Releases 里**，要从 GitHub Actions 的构建产�
 ## 已知限制
 
 - **横屏未验证**。方向无关的尺寸基准已经就位，但没在真机上转横屏跑过。
-- **降到最小档仍然放不下时没有降级手段**。竖屏 + 正常 DPI 下够不着，但真发生
-  的话内容会被裁切。要补的话方向是砍掉整块内容，而不是继续缩字号。
-- **读完判定是启发式的**，见下面的口径说明。
+- **内容比屏幕还高时只会先吃掉顶部留白**。内容量固定，正常 DPI 下横竖屏都放得下，
+  本不该发生；真发生的话，方向是砍掉整块内容，而不是缩字号。
+- **只数在 KOReader 里标记为「已读完」的书**，见下面的口径说明。
 
 渲染整体包在 `pcall` 里，失败会退回内置页面，不会导致设备睡不着。
 
 ## 口径说明
 
-- **单页时长截断**：原始 duration 含"忘了合上"的脏数据，按 `CFG.max_sec = 120` 截断，
-  与 statistics 插件自身做法一致。因此累计值会小于 `book.total_read_time`。
-- **读完判定**：完成状态存在书旁边的 sidecar 里，不在数据库中。这里用
-  `MAX(page/total_pages) >= 0.97` 且取最后一次阅读的月份，属于估算。
-- **时区**：`start_time` 是 UTC 秒，偏移在 Lua 里算好再传进 SQL（不依赖 SQLite 的
-  `localtime` 修饰符，Kindle 系统时区常为 UTC）。
+- **单页时长截断**：原始 duration 含"忘了合上"的脏数据，逐日数字按统计插件自己的
+  「单页最长时间」设置截断（`CFG.max_sec = 120` 只是该设置缺失时的兜底）。
+- **累计就是 KOReader 自己的累计**：取 `book.total_read_time` 之和，也就是统计插件
+  页面上显示的那个数，不从逐页表重算，两边永远一致。
+- **读完的书**：sidecar 里 `summary.status` 为 `complete` 的，即在 KOReader 里标记
+  为已读完的书。书库和 docsettings 目录由子进程扫描，最多 12 小时一次，结果缓存；
+  菜单里的「重新扫描已读完书籍」（也可绑手势）会强制重扫。
+- **时区**：`start_time` 是 UTC 秒。按进程时区在本地零点切日，与统计插件的
+  `localtime` 分组口径相同；Kindle 系统时区是 UTC，偏移为 0。实际用的值打在 build
+  日志行的 `tz=` 里；在别的机器上读设备的库时用 `DENSESTATS_TZ_OFFSET` 覆盖。
 - **连续天数**：今天还没读不算断，从昨天往回数。
 
 ## 许可
