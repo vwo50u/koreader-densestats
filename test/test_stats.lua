@@ -150,6 +150,19 @@ ok(dw.today == 5375, "今日不受影响", dw.today)
 local nofall = S.derive({ by_day = { ["2026-08-10"]=3600 } }, ts(2026,8,10))
 ok(nofall.total == 3600, "没给全量汇总时退回窗口内求和", nofall.total)
 
+print("== weekBreaks：曲线里哪些格子是一周的第一天 ==")
+local function keys(t) local k = {}; for i in pairs(t or {}) do k[#k + 1] = i end; table.sort(k); return table.concat(k, ",") end
+local function breaks(...) local okc, v = pcall(S.weekBreaks, ...); return okc and keys(v) or "ERR" end
+-- 2026-08-16 是周日；30 格里的周一是 7-20、7-27、8-3、8-10，即第 3、10、17、24 格
+ok(breaks(ts(2026,8,16), 30, 2) == "3,10,17,24", "周一为周首", breaks(ts(2026,8,16), 30, 2))
+-- 周日为周首：7-19、7-26、8-2、8-9、8-16（今天）都是周日，即第 2、9、16、23、30 格
+ok(breaks(ts(2026,8,16), 30, 1) == "2,9,16,23,30", "周日为周首时今天（周日）也算，第 30 格", breaks(ts(2026,8,16), 30, 1))
+-- 第 1 格前面没有缝可留，永远不算
+ok(breaks(ts(2026,8,16), 7, 2) == "", "第 1 格是周一也不算", breaks(ts(2026,8,16), 7, 2))
+ok(breaks(ts(2026,8,10), 30, 2) == "2,9,16,23,30", "今天是周一：最后一格算，第 1 格不算", breaks(ts(2026,8,10), 30, 2))
+ok(keys(S.derive(real, ts(2026,8,16), { curve_days=30, week_start=2 }).curve_breaks) == "3,10,17,24",
+   "derive 顺带给出 curve_breaks", keys(S.derive(real, ts(2026,8,16), { curve_days=30, week_start=2 }).curve_breaks))
+
 print("== dayKeyOf / dayCutoff / tzOffsetAt ==")
 -- 函数还不存在时 pcall 返回 false，让这里显示 FAIL 而不是让整个文件炸掉
 local function try(f, ...) local okc, v = pcall(f, ...); return okc and v or nil end

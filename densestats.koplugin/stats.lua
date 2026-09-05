@@ -67,6 +67,19 @@ function M.weekStartKey(now, week_start)
     return dayKey(os.time({ year = t.year, month = t.month, day = t.day - back, hour = 12 }))
 end
 
+-- 曲线的 n 个格子里哪些是一周的第一天，返回 { [i] = true }。第 1 格前面没缝可留，
+-- 永远不算。CurveWidget 在这些柱子前面多空一格，不写字也能读出周的节奏。
+function M.weekBreaks(now, n, week_start)
+    week_start = week_start or 2
+    local t = os.date("*t", now)
+    local out = {}
+    for i = 2, n do
+        local d = os.date("*t", os.time({ year = t.year, month = t.month, day = t.day - (n - i), hour = 12 }))
+        if d.wday == week_start then out[i] = true end
+    end
+    return out
+end
+
 -- 下面三个是 main.lua 取数用的日界换算，放在这里只为能用 luajit 单测。
 
 -- 天号转回日期串。天号 = floor((start_time + 时区偏移) / 86400)，乘回去正好是
@@ -118,6 +131,7 @@ function M.derive(data, now, cfg)
         local k = dayKey(os.time({ year = t.year, month = t.month, day = t.day - i, hour = 12 }))
         d.curve[#d.curve + 1] = tonumber(by_day[k]) or 0
     end
+    d.curve_breaks = M.weekBreaks(now, curve_days, week_start)
 
     -- 累计优先用调用方给的全量汇总（逐日明细只覆盖近一年多，拿窗口内的数据
     -- 当累计会少算）。没有就退回按窗口求和。

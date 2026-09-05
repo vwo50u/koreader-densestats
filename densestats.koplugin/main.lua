@@ -454,7 +454,8 @@ end
 -- 横轴文字——这版里它是一段节奏纹理，不是一张要读数的图表。
 -- 纵轴刻度取 max(峰值, 1 小时)，读得少的日子不会把柱子顶满整图。
 -- 最后一根是今天：熄屏时今天多半只读了一半，画成空心，免得曲线结尾看着总像塌了一截。
-local CurveWidget = Widget:extend{ values = nil, w = 0, h = 0, scale = 3600, gap = 1 }
+-- breaks = { [i]=true }：这些柱子是一周的第一天，前面多空一个柱宽（Stats.weekBreaks）。
+local CurveWidget = Widget:extend{ values = nil, breaks = nil, w = 0, h = 0, scale = 3600, gap = 1 }
 
 function CurveWidget:getSize()
     return Geom:new{ w = self.w, h = self.h }
@@ -463,12 +464,16 @@ end
 function CurveWidget:paintTo(bb, x, y)
     local n = #(self.values or {})
     if n == 0 or self.w <= 0 or self.h <= 0 then return end
-    local gap = self.gap
-    local bar_w = math.max(1, math.floor((self.w - gap * (n - 1)) / n))
+    local gap, breaks = self.gap, self.breaks or {}
+    -- 周首前面的空档占一个柱宽，所以柱宽按 n + 空档数 来分
+    local k = 0
+    for _ in pairs(breaks) do k = k + 1 end
+    local bar_w = math.max(1, math.floor((self.w - gap * (n - 1)) / (n + k)))
     -- 读过的日子至少这么高，才和下面 1px 的空日刻度分得开（读 5 秒的日子原来也是 1px）
     local min_h = math.max(2, Screen:scaleBySize(2))
+    local bx = x
     for i, v in ipairs(self.values) do
-        local bx = x + (i - 1) * (bar_w + gap)
+        if breaks[i] then bx = bx + bar_w end
         if v > 0 then
             local h = math.max(min_h, math.floor(self.h * v / self.scale))
             local top = y + self.h - h
@@ -487,6 +492,7 @@ function CurveWidget:paintTo(bb, x, y)
             -- 看不出曲线到底画到哪一天；深灰不用浅灰，1px 浅灰在墨水屏上会消失。
             bb:paintRect(bx, y + self.h - 1, bar_w, 1, INK_DIM)
         end
+        bx = bx + bar_w + gap
     end
 end
 
@@ -528,7 +534,7 @@ local function layout(data, d, fin_data)
     local peak = 1
     for _, v in ipairs(d.curve) do if v > peak then peak = v end end
     add(CurveWidget:new{
-        values = d.curve, w = usable, h = math.floor(H * 0.07),
+        values = d.curve, breaks = d.curve_breaks, w = usable, h = math.floor(H * 0.07),
         scale = math.max(peak, 3600), gap = Screen:scaleBySize(2),
     })
     add(vspace(H * 0.09))
