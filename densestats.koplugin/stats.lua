@@ -191,6 +191,17 @@ function M.currentLine(authors, frac, left)
     return table.concat(parts, "  ·  ")
 end
 
+-- 章节那行小字：标题 · 本章还剩 N 页。没有标题（无目录的书）返回 nil，整行不画；
+-- 剩余页未知就只写标题；剩 0 页写"章末"。回答的是"要不要再读一会儿把这章看完"。
+function M.chapterLine(title, left)
+    title = tostring(title or ""):gsub("^%s+", ""):gsub("%s+$", "")
+    if title == "" then return nil end
+    left = tonumber(left)
+    if not left then return title end
+    if left <= 0 then return title .. "  ·  章末" end
+    return string.format("%s  ·  本章还剩 %d 页", title, left)
+end
+
 -- 书名截短：单行放不下时先丢副标题。只认冒号、带空格的破折号和括号（括号里多半是
 -- "梦梅馆校本""Deluxe Edition"这类版本说明），"Spider-Man" 这种连字符不碰。
 -- 截完为空就退回原名。

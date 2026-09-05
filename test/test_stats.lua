@@ -84,6 +84,15 @@ ok(cl("兰陵笑笑生", 0.041, 32400) == "兰陵笑笑生  ·  4%  ·  约剩 9
 ok(cl("", 0.5, nil) == "50%", "没作者、没估算就只剩百分比", cl("", 0.5, nil))
 ok(cl(nil, 0.999, 120) == "99%  ·  约剩 2m", "没读完不许显示 100%", cl(nil, 0.999, 120))
 
+print("== chapterLine：章节标题 · 本章还剩 N 页 ==")
+local function chl(...) local okc, v = pcall(S.chapterLine, ...); if not okc then return "ERR" end; return v end
+ok(chl("第十二回 潘金莲私仆受辱", 8) == "第十二回 潘金莲私仆受辱  ·  本章还剩 8 页", "标题加剩余页", chl("第十二回 潘金莲私仆受辱", 8))
+ok(chl("第十二回", 0) == "第十二回  ·  章末", "剩 0 页写章末", chl("第十二回", 0))
+ok(chl("第十二回", nil) == "第十二回", "不知道剩几页就只写标题", chl("第十二回", nil))
+ok(chl("", 8) == nil, "没有章节标题（无目录的书）整行不显示", chl("", 8))
+ok(chl(nil, nil) == nil, "nil 不炸")
+ok(chl("  第十二回  ", 3) == "第十二回  ·  本章还剩 3 页", "标题两端空白去掉", chl("  第十二回  ", 3))
+
 print("== rowsOf ==")
 ok(#S.rowsOf(nil, 2) == 0, "nil 结果返回空表")
 ok(#S.rowsOf({}, 2) == 0, "空结果返回空表")

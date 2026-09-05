@@ -527,7 +527,7 @@ end
 
 -- 整屏排版。垂直方向不拉伸：顶部留 15%，内容按固定间距往下排，电量贴底。
 -- 间距按屏高的比例写，横屏时自动收紧。内容比屏幕还高（不该发生）时先吃顶部留白。
-local function layout(data, d, fin_data)
+local function layout(data, d, fin_data, ctx)
     local W, H = Screen:getWidth(), Screen:getHeight()
     local pad_x = math.floor(W * 0.12)
     local usable = W - pad_x * 2
@@ -565,6 +565,14 @@ local function layout(data, d, fin_data)
         add(title)
         add(vspace(Screen:scaleBySize(6)))
         add(txt(Stats.currentLine(cur.authors, cur.frac, cur.left), faceSmall(), INK_DIM, usable))
+        -- 章节进度：只有在阅读界面里锁屏才拿得到（目录属于打开的文档），
+        -- 文件管理器里锁屏、或这本书没有目录时，这行不画。
+        local ch = ctx and ctx.chapter
+        local chapter_line = ch and ch.book == cur.title and Stats.chapterLine(ch.title, ch.left)
+        if chapter_line then
+            add(vspace(Screen:scaleBySize(4)))
+            add(txt(chapter_line, faceSmall(), INK_DIM, usable))
+        end
         add(vspace(Screen:scaleBySize(12)))
         add(ProgressLine:new{ frac = cur.frac, w = usable })
     end
@@ -612,7 +620,28 @@ end
 -- 设备还醒着的时候（kindle/device.lua 里 Screensaver:show() 排在
 -- powerd:beforeSuspend() 之前），所以它的开销记在"亮屏"账上。要判断这个插件
 -- 对续航的实际影响，唯一的办法就是让真机把每次的耗时写进 crash.log。
-local function buildWidget()
+-- 当前章节：标题和本章剩余页数。目录属于打开的文档，所以只有 ReaderUI 有；
+-- FileManager 的 ui 没有 toc，返回 nil。API 与页脚同源（readerfooter.lua:298/406）。
+local function chapterInfo(ui)
+    if not (ui and ui.toc and ui.document) then return nil end
+    local ok, info = pcall(function()
+        local pn = ui:getCurrentPage()
+        local title = ui.toc:getTocTitleByPage(pn)
+        if not title or title == "" then return nil end
+        -- 带上这本书的书名：statistics 写库用的就是 doc_props.display_title
+        -- （statistics.koplugin/main.lua:161），layout 用它核对"库里的当前在读"
+        -- 是不是打开的这本——刚打开、还没写入记录时两者会错位，那时不画章节。
+        return {
+            title = title,
+            left = ui.toc:getChapterPagesLeft(pn),
+            book = ui.doc_props and ui.doc_props.display_title,
+        }
+    end)
+    return ok and info or nil
+end
+
+-- ctx.chapter 由调用方按所在 UI 决定（见 chapterInfo）
+local function buildWidget(ctx)
     local t_begin = time.now()
     local data = collect()
     local ms_sql = time.to_ms(time.since(t_begin))
@@ -622,7 +651,7 @@ local function buildWidget()
     local fin_data = getFinished()
 
     local t_layout = time.now()
-    local widget = layout(data, d, fin_data)
+    local widget = layout(data, d, fin_data, ctx)
     local ms_layout = time.to_ms(time.since(t_layout))
 
     -- fin= 是回归哨兵：fin_data 没送到（传了 nil）时别的数字一字不差。
@@ -644,7 +673,7 @@ local Preview = InputContainer:extend{}
 function Preview:init()
     self.dimen = Screen:getSize()
     self.covers_fullscreen = true   -- 提示 UIManager:_repaint() 不必重画下层（readerprogress.lua:49）
-    local ok_b, w = pcall(buildWidget)
+    local ok_b, w = pcall(buildWidget, { chapter = chapterInfo(self.ui) })
     if not ok_b then logger.warn("densestats: preview build failed:", w); w = nil end
     self[1] = w or CenterContainer:new{
         dimen = Screen:getSize(),
@@ -751,7 +780,7 @@ function DenseStats:_hookStatistics()
             -- 原版这里第一件事就是 insertDB()，把本次阅读还在内存里的记录落盘。
             -- 绕过它的话，屏保上的"今日"会少算当前这一段。
             pcall(function() this:insertDB() end)
-            local ok, w = pcall(buildWidget)
+            local ok, w = pcall(buildWidget, { chapter = chapterInfo(this.ui) })
             if ok and w then return w end
             logger.warn("densestats: build failed:", w)
         end
@@ -820,7 +849,7 @@ function DenseStats:_maybeAutoShow()
     if DenseStats._autoshown then return end
     DenseStats._autoshown = true
     UIManager:scheduleIn(6, function()
-        UIManager:show(Preview:new{})
+        UIManager:show(Preview:new{ ui = self.ui })
         -- DENSESTATS_SHOT=/path/x.png：画完两秒后把帧缓冲存成 PNG。纯开发用，
         -- 桌面上拿不到设备截图，评审排版只能靠这个。
         local shot = os.getenv("DENSESTATS_SHOT")

@@ -28,7 +28,9 @@ Top to bottom:
   no title, no numbers. Today's bar is light grey, since the day is usually unfinished
 - **Currently reading** — title (subtitle dropped if it does not fit on one line),
   author · percentage (rounded down) · estimated time left (this book's own pace,
-  pages read in the current pagination only), and a hairline progress bar
+  pages read in the current pagination only), the current chapter with the pages left
+  in it (only when the screen locks from the reader, since the table of contents
+  belongs to the open document), and a hairline progress bar ticked at 25/50/75%
   (black for what is read, light grey for the rest)
 - **Battery** — tiny grey text in the bottom-right corner. No clock: a sleep screen
   is rendered once and then freezes, and a frozen clock only misleads
