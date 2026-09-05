@@ -7,3 +7,5 @@ env LUA_PATH="$KO/?.lua;$KO/frontend/?.lua;;" \
          LUA_CPATH="$KO/?.so;$KO/libs/?.so;;" \
      "$KO/luajit" test/test_finished.lua
 env LUA_PATH="$KO/?.lua;$KO/frontend/?.lua;;" LUA_CPATH="$KO/?.so;$KO/libs/?.so;;" "$KO/luajit" test/test_stats.lua
+# dev.sh install 的行为测试只能在 macOS 上跑（cp -X 是 macOS 特有的）
+if [ "$(uname)" = Darwin ]; then test/test_install.sh; fi
