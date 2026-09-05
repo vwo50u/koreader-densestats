@@ -229,6 +229,15 @@ local function collect()
                 -- 夹到 1：记录当时的 total_pages 比当前页码小的话（换过字号）会超 100%
                 frac  = pages > 0 and math.min(page / pages, 1) or 0,
             }
+            -- 约剩多久：这本书在当前排版下读过的时长和页数。只取 total_pages 相同的
+            -- 记录，换过字号的页码单位不同。走 (id_book, page, start_time) 唯一索引。
+            local pace = queryRows(conn, string.format([[
+                SELECT SUM(MIN(duration, %d)), COUNT(DISTINCT page)
+                FROM page_stat_data WHERE id_book = %d AND total_pages = %d;
+            ]], cap, id, pages), 2)[1]
+            if pace then
+                data.current.left = Stats.timeLeft(pace[1], pace[2], page, pages)
+            end
         end
     end
 
@@ -539,7 +548,7 @@ local function layout(data, d, fin_data)
     })
     add(vspace(H * 0.09))
 
-    -- 当前在读：书名、作者 · 百分比、细线进度。没有在读的书就整块不画。
+    -- 当前在读：书名、作者 · 百分比 · 约剩、细线进度。没有在读的书就整块不画。
     -- 书名一行放不下就丢副标题；百分比向下取整，没读完就不许显示 100%。
     local cur = data.current
     if cur then
@@ -549,9 +558,7 @@ local function layout(data, d, fin_data)
         end
         add(title)
         add(vspace(Screen:scaleBySize(6)))
-        local sub = string.format("%d%%", math.floor(cur.frac * 100))
-        if cur.authors and cur.authors ~= "" then sub = cur.authors .. "  ·  " .. sub end
-        add(txt(sub, faceSmall(), INK_DIM, usable))
+        add(txt(Stats.currentLine(cur.authors, cur.frac, cur.left), faceSmall(), INK_DIM, usable))
         add(vspace(Screen:scaleBySize(12)))
         add(progressLine(cur.frac, usable))
     end

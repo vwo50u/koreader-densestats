@@ -172,6 +172,25 @@ function M.summaryLine(d, fin_total)
     return table.concat(parts, "  ·  ")
 end
 
+-- 约剩多久：按这本书的历史速度（读过的时长 ÷ 读过的页数）乘以剩余页。
+-- pages_read 只该算和当前排版一致的记录——换过字号的页码单位不同，混在一起会失真。
+-- 不足 5 页不估，两三页的速度什么也说明不了。
+function M.timeLeft(sec, pages_read, page, pages)
+    sec, pages_read = tonumber(sec) or 0, tonumber(pages_read) or 0
+    page, pages = tonumber(page) or 0, tonumber(pages) or 0
+    if sec <= 0 or pages_read < 5 or pages <= 0 or page >= pages then return nil end
+    return math.floor((pages - page) * sec / pages_read)
+end
+
+-- 当前在读那行小字：作者 · 百分比 · 约剩。空的段不写；百分比向下取整，没读完不显示 100%。
+function M.currentLine(authors, frac, left)
+    local parts = {}
+    if authors and authors ~= "" then parts[#parts + 1] = authors end
+    parts[#parts + 1] = string.format("%d%%", math.floor((tonumber(frac) or 0) * 100))
+    if left and left > 0 then parts[#parts + 1] = "约剩 " .. M.fmtHM(left) end
+    return table.concat(parts, "  ·  ")
+end
+
 -- 书名截短：单行放不下时先丢副标题。只认冒号、带空格的破折号和括号（括号里多半是
 -- "梦梅馆校本""Deluxe Edition"这类版本说明），"Spider-Man" 这种连字符不碰。
 -- 截完为空就退回原名。

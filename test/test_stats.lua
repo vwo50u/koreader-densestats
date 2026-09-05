@@ -67,6 +67,23 @@ ok(S.shortTitle("[丛书] 书名") == "[丛书] 书名", "括号开头截完为�
 ok(S.shortTitle("A: B [C]") == "A", "多种分隔符取最靠前的", S.shortTitle("A: B [C]"))
 ok(S.shortTitle(nil) == "", "nil 不炸", S.shortTitle(nil))
 
+print("== timeLeft：按这本书的历史速度估还要读多久 ==")
+-- 期望值本身可能是 nil，所以不能写 okc and v or "ERR"
+local function tl(...) local okc, v = pcall(S.timeLeft, ...); if not okc then return "ERR" end; return v end
+ok(tl(3600, 30, 30, 300) == 32400, "读了 30 页花 1 小时，还剩 270 页 → 9 小时", tl(3600, 30, 30, 300))
+ok(tl(3600, 30, 250, 300) == 6000, "剩余页按当前页算，不按读过的页数算", tl(3600, 30, 250, 300))
+ok(tl(600, 4, 4, 300) == nil, "读过的页太少（不足 5 页）不估", tl(600, 4, 4, 300))
+ok(tl(0, 30, 30, 300) == nil, "没有时长不估", tl(0, 30, 30, 300))
+ok(tl(3600, 30, 300, 300) == nil, "已到末页不估", tl(3600, 30, 300, 300))
+ok(tl(3600, 30, 30, 0) == nil, "总页数未知不估", tl(3600, 30, 30, 0))
+ok(tl(nil, nil, nil, nil) == nil, "nil 不炸")
+
+print("== currentLine：作者 · 百分比 · 约剩 ==")
+local function cl(...) local okc, v = pcall(S.currentLine, ...); if not okc then return "ERR" end; return v end
+ok(cl("兰陵笑笑生", 0.041, 32400) == "兰陵笑笑生  ·  4%  ·  约剩 9h00", "三段齐全，百分比向下取整", cl("兰陵笑笑生", 0.041, 32400))
+ok(cl("", 0.5, nil) == "50%", "没作者、没估算就只剩百分比", cl("", 0.5, nil))
+ok(cl(nil, 0.999, 120) == "99%  ·  约剩 2m", "没读完不许显示 100%", cl(nil, 0.999, 120))
+
 print("== rowsOf ==")
 ok(#S.rowsOf(nil, 2) == 0, "nil 结果返回空表")
 ok(#S.rowsOf({}, 2) == 0, "空结果返回空表")
