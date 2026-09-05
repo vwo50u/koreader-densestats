@@ -62,17 +62,22 @@ local CFG = {
     window_days = 400,   -- 逐日明细只查这个窗口；累计另走 book 表汇总
     finished_cache_hours = 12,  -- sidecar 扫描结果缓存时长
     cache_titles = 60,          -- 缓存里最多保留多少本书名（渲染时要整份解析）
-    tz_offset = 0,              -- start_time 与设备墙钟一致，真机上为 0；设 nil 则自动推断
+    tz_offset = nil,            -- 分日用的时区偏移（秒）。nil = 按进程时区自动推断，见 tzOffset
 }
 -- =================================================================
 
--- 注意：Kindle 上 start_time 与设备本地墙钟一致（系统时区为 UTC），
--- 因此在设备上 tzOffset() 返回 0，分组结果与 KOReader 自身完全一致（已用真实库核对）。
--- 在别的机器上直接读这个库做 SQL 时，偏移应当填 0 而不是 +8h。
+-- 分日的时区偏移，跟 statistics 插件同一口径：它按 SQLite 的 'localtime' 分日
+-- （statistics.koplugin/main.lua:273），也就是进程时区，所以这里取"本地时间 − UTC"。
+-- Kindle 的系统时区是 UTC，算出来是 0，与 KOReader 自身的日历完全一致（已用真实库
+-- 核对）；Android 这类时区正常的平台上是真实偏移。原来写死 0，在非 UTC 设备上
+-- 早晨的阅读会被记到前一天，而 stats.derive 的 today_key 走本地日期，"今日"就漏了。
+-- 偏移按"现在"算一次，跨夏令时切换的那一天边界差一小时，不管。
+-- 在别的机器上读 Kindle 的库做对比时，用 DENSESTATS_TZ_OFFSET=0 压成 Kindle 的口径。
+-- 实际用了多少写在 build 日志行的 tz= 里，换设备先看它。
 local function tzOffset()
-    -- 显式覆盖优先（真机上应为 0；在别的机器上读 Kindle 的库做对比测试时也用 0）
+    -- 显式覆盖优先：环境变量 > CFG.tz_offset > 自动推断
     local env = os.getenv("DENSESTATS_TZ_OFFSET")
-    if env then return tonumber(env) or 0 end
+    if env then return math.floor(tonumber(env) or 0) end
     if CFG.tz_offset then return CFG.tz_offset end
     local now = os.time()
     local u = os.date("!*t", now)
@@ -103,6 +108,7 @@ local fmtHM, fmtClock, rowsOf = Stats.fmtHM, Stats.fmtClock, Stats.rowsOf
 -- page_stat_data，其余都是索引或主键点查），日志里带上它，才能把"这台设备慢"
 -- 和"这个库大"分开看。
 local last_db_bytes = -1
+local last_tz_off = 0      -- 上次 collect() 用的时区偏移，同样只为进日志
 
 -- 每次查询都必须带上 conn:exec 的第二个返回值当行数，理由见 stats.lua 的 rowsOf。
 -- 包成函数是因为 Lua 的 f(g(), n) 会把 g() 截成一个返回值，写在调用点就得多两行。
@@ -140,6 +146,7 @@ local function collect()
     end
 
     local off = tzOffset()
+    last_tz_off = off
     local cap = maxSec()
     local data = {}
     local function query()
@@ -621,9 +628,9 @@ local function buildWidget()
     -- fin= 是回归哨兵：fin_data 没送到（传了 nil）时别的数字一字不差。
     -- nil 记 -1，好和"有缓存但一本都没读完"的 0 分开。
     logger.info(string.format(
-        "densestats build: 合计 %.0fms = SQL %.0f + 排版 %.0f | 库 %.1fMB | fin=%d",
+        "densestats build: 合计 %.0fms = SQL %.0f + 排版 %.0f | 库 %.1fMB | tz=%+d | fin=%d",
         time.to_ms(time.since(t_begin)), ms_sql, ms_layout,
-        last_db_bytes / 1048576, fin_data and (fin_data.total or 0) or -1))
+        last_db_bytes / 1048576, last_tz_off, fin_data and (fin_data.total or 0) or -1))
     return widget
 end
 
